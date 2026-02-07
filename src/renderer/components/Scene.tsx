@@ -484,18 +484,21 @@ const DecoratingDrawingSurface: React.FC<{
   const [isDrawing, setIsDrawing] = useState(false);
   const currentStrokeRef = useRef<{ x: number; y: number }[]>([]);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const backgroundCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const textureRef = useRef<THREE.CanvasTexture | null>(null);
   const [textureVersion, setTextureVersion] = useState(0);
+  // Reuse raycasting objects to avoid allocations in the hot path
+  const mouseVecRef = useRef(new THREE.Vector2());
+  const intersectionVecRef = useRef(new THREE.Vector3());
 
-  const SECTION_LEN = 10;
   const CANVAS_W = 1600;
   const CANVAS_H = 1000;
 
   // Find the active section and drawing
+  // Use the camera's zPosition directly — the camera is placed at this depth in decorating mode
   const activeSection = useMemo(() => {
-    const centerZ = zPosition + SECTION_LEN / 2;
     return wallSections.find(s =>
-      s.wall === wall && centerZ >= s.zStart && centerZ < s.zEnd
+      s.wall === wall && zPosition >= s.zStart && zPosition < s.zEnd
     );
   }, [wallSections, wall, zPosition]);
 
@@ -523,10 +526,11 @@ const DecoratingDrawingSurface: React.FC<{
     if (!activeSection) return null;
     const h = TUNNEL_HEIGHT / 2;
     const worldZ = -worldPoint.z;
+    const sectionLen = activeSection.zEnd - activeSection.zStart;
 
     if (worldZ < activeSection.zStart || worldZ >= activeSection.zEnd) return null;
 
-    const zNorm = (worldZ - activeSection.zStart) / SECTION_LEN;
+    const zNorm = (worldZ - activeSection.zStart) / sectionLen;
 
     switch (wall) {
       case 'left':
@@ -544,23 +548,32 @@ const DecoratingDrawingSurface: React.FC<{
     }
   }, [activeSection, wall]);
 
-  // Initialize canvas
+  // Initialize canvases and render committed strokes to background
   useEffect(() => {
     if (!canvasRef.current) {
       canvasRef.current = document.createElement('canvas');
       canvasRef.current.width = CANVAS_W;
       canvasRef.current.height = CANVAS_H;
     }
+    if (!backgroundCanvasRef.current) {
+      backgroundCanvasRef.current = document.createElement('canvas');
+      backgroundCanvasRef.current.width = CANVAS_W;
+      backgroundCanvasRef.current.height = CANVAS_H;
+    }
 
-    const ctx = canvasRef.current.getContext('2d')!;
-    ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
-
-    // Render existing strokes from the active drawing
+    // Render all committed strokes onto the background canvas
+    const bgCtx = backgroundCanvasRef.current.getContext('2d')!;
+    bgCtx.clearRect(0, 0, CANVAS_W, CANVAS_H);
     if (activeDrawing?.strokes) {
       activeDrawing.strokes.forEach(stroke => {
-        renderStrokeToContext(ctx, stroke);
+        renderStrokeToContext(bgCtx, stroke);
       });
     }
+
+    // Copy background to foreground (visible texture)
+    const ctx = canvasRef.current.getContext('2d')!;
+    ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
+    ctx.drawImage(backgroundCanvasRef.current, 0, 0);
 
     if (textureRef.current) {
       textureRef.current.needsUpdate = true;
@@ -570,7 +583,7 @@ const DecoratingDrawingSurface: React.FC<{
     }
   }, [activeDrawing?.strokes?.length, activeDrawing?.id]);
 
-  // Calculate mesh position and rotation
+  // Calculate mesh position and rotation using actual section bounds
   const { position, rotation, planeWidth, planeHeight } = useMemo(() => {
     if (!activeSection) {
       return { position: [0, 0, 0] as [number, number, number], rotation: [0, 0, 0] as [number, number, number], planeWidth: 1, planeHeight: 1 };
@@ -579,6 +592,7 @@ const DecoratingDrawingSurface: React.FC<{
     const w = TUNNEL_WIDTH / 2;
     const h = TUNNEL_HEIGHT / 2;
     const sectionMidZ = -(activeSection.zStart + activeSection.zEnd) / 2;
+    const sectionLen = activeSection.zEnd - activeSection.zStart;
 
     let pos: [number, number, number];
     let rot: [number, number, number];
@@ -589,26 +603,26 @@ const DecoratingDrawingSurface: React.FC<{
       case 'left':
         pos = [-w + 0.03, 0, sectionMidZ];
         rot = [0, Math.PI / 2, 0];
-        pWidth = SECTION_LEN;
+        pWidth = sectionLen;
         pHeight = TUNNEL_HEIGHT;
         break;
       case 'right':
         pos = [w - 0.03, 0, sectionMidZ];
         rot = [0, -Math.PI / 2, 0];
-        pWidth = SECTION_LEN;
+        pWidth = sectionLen;
         pHeight = TUNNEL_HEIGHT;
         break;
       case 'floor':
         pos = [0, -h + 0.03, sectionMidZ];
         rot = [-Math.PI / 2, 0, 0];
         pWidth = TUNNEL_WIDTH;
-        pHeight = SECTION_LEN;
+        pHeight = sectionLen;
         break;
       case 'ceiling':
         pos = [0, h - 0.03, sectionMidZ];
         rot = [Math.PI / 2, 0, 0];
         pWidth = TUNNEL_WIDTH;
-        pHeight = SECTION_LEN;
+        pHeight = sectionLen;
         break;
     }
 
@@ -617,17 +631,17 @@ const DecoratingDrawingSurface: React.FC<{
 
   const getCanvasPoint = useCallback((clientX: number, clientY: number): { x: number; y: number } | null => {
     const rect = gl.domElement.getBoundingClientRect();
-    const mouse = new THREE.Vector2(
+    // Reuse pre-allocated vectors to avoid GC pressure in the hot path
+    mouseVecRef.current.set(
       ((clientX - rect.left) / rect.width) * 2 - 1,
       -((clientY - rect.top) / rect.height) * 2 + 1
     );
 
-    raycaster.setFromCamera(mouse, camera);
-    const intersection = new THREE.Vector3();
-    raycaster.ray.intersectPlane(wallPlane, intersection);
+    raycaster.setFromCamera(mouseVecRef.current, camera);
+    const hit = raycaster.ray.intersectPlane(wallPlane, intersectionVecRef.current);
 
-    if (intersection) {
-      return worldToCanvas(intersection);
+    if (hit) {
+      return worldToCanvas(intersectionVecRef.current);
     }
     return null;
   }, [camera, raycaster, gl, wallPlane, worldToCanvas]);
@@ -663,19 +677,15 @@ const DecoratingDrawingSurface: React.FC<{
     if (point) {
       currentStrokeRef.current.push(point);
 
-      // Render stroke in progress
-      if (canvasRef.current && textureRef.current) {
+      // Double-buffered render: composite background + current stroke only
+      if (canvasRef.current && backgroundCanvasRef.current && textureRef.current) {
         const ctx = canvasRef.current.getContext('2d')!;
         ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
 
-        // Re-render existing strokes
-        if (activeDrawing?.strokes) {
-          activeDrawing.strokes.forEach(stroke => {
-            renderStrokeToContext(ctx, stroke);
-          });
-        }
+        // Blit the pre-rendered background (all committed strokes) in one operation
+        ctx.drawImage(backgroundCanvasRef.current, 0, 0);
 
-        // Render current stroke
+        // Render only the current in-progress stroke
         const tempStroke: DrawingStroke = {
           points: currentStrokeRef.current,
           color: brushSettings.color,
@@ -686,7 +696,7 @@ const DecoratingDrawingSurface: React.FC<{
         textureRef.current.needsUpdate = true;
       }
     }
-  }, [isDrawing, brushSettings, getCanvasPoint, activeDrawing?.strokes]);
+  }, [isDrawing, brushSettings, getCanvasPoint]);
 
   const handlePointerUp = useCallback(() => {
     if (isDrawing && currentStrokeRef.current.length > 1 && activeDrawing && brushSettings) {
