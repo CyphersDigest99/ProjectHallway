@@ -1,0 +1,161 @@
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import { useSceneStore } from '../../store/sceneStore';
+import { DecoratingInfo } from './DecoratingToolbar';
+import { CanvasToolbar, CanvasTool } from './CanvasToolbar';
+import { DrawingStyle, CanvasDrawingItem, AnyCanvasItem } from '../../../shared/types';
+
+// Wall dimensions for canvas coordinate system
+const CANVAS_WIDTH = 1600;
+const CANVAS_HEIGHT = 1000;
+const SECTION_LENGTH = 10;
+
+interface DecoratingMode3DProps {
+  onContextMenu: (e: React.MouseEvent, item?: AnyCanvasItem) => void;
+}
+
+// Main decorating mode overlay component (toolbar only - drawing happens in Scene.tsx)
+export const DecoratingMode3D: React.FC<DecoratingMode3DProps> = ({ onContextMenu }) => {
+  const {
+    decoratingState,
+    canvasItems,
+    wallSections,
+    addCanvasItem,
+    exitDecoratingMode,
+    moveDecoratingCamera,
+    undoStroke,
+    redoStroke,
+    canUndo,
+    canRedo,
+    generateSectionsUpToDepth,
+    maxGeneratedSectionDepth,
+    copySelectedItems,
+    pasteItems,
+    setDecoratingBrushSettings,
+  } = useSceneStore();
+
+  const [currentTool, setCurrentTool] = useState<CanvasTool>('draw');
+  const [brushColor, setBrushColor] = useState('#ff0000');
+  const [brushSize, setBrushSize] = useState(10);
+  const [brushStyle, setBrushStyle] = useState<DrawingStyle>('spray');
+
+  const wall = decoratingState?.wall;
+  const zPosition = decoratingState?.zPosition ?? 0;
+
+  // Sync brush settings to store so Scene can access them
+  useEffect(() => {
+    if (setDecoratingBrushSettings) {
+      setDecoratingBrushSettings({
+        tool: currentTool,
+        color: brushColor,
+        size: brushSize,
+        style: brushStyle,
+      });
+    }
+  }, [currentTool, brushColor, brushSize, brushStyle, setDecoratingBrushSettings]);
+
+  // Get visible sections for current wall
+  const visibleSections = useMemo(() => {
+    if (!wall) return [];
+    const buffer = SECTION_LENGTH;
+    return wallSections.filter(section =>
+      section.wall === wall &&
+      section.zEnd > zPosition - buffer &&
+      section.zStart < zPosition + SECTION_LENGTH + buffer
+    ).sort((a, b) => a.zStart - b.zStart);
+  }, [wallSections, wall, zPosition]);
+
+  // Get active section (centered on camera)
+  const activeSection = useMemo(() => {
+    const centerZ = zPosition + SECTION_LENGTH / 2;
+    return visibleSections.find(s => centerZ >= s.zStart && centerZ < s.zEnd);
+  }, [visibleSections, zPosition]);
+
+  // Ensure a drawing exists for the active section
+  useEffect(() => {
+    if (currentTool === 'draw' && activeSection && wall) {
+      const existingDrawing = canvasItems.find(
+        item => item.type === 'drawing' && item.sectionId === activeSection.id && item.wall === wall
+      ) as CanvasDrawingItem | undefined;
+
+      if (!existingDrawing) {
+        addCanvasItem({
+          type: 'drawing',
+          wall,
+          sectionId: activeSection.id,
+          position: { x: 0, y: 0 },
+          size: { width: CANVAS_WIDTH, height: CANVAS_HEIGHT },
+          strokes: [],
+        } as Omit<CanvasDrawingItem, 'id' | 'zIndex'>);
+      }
+    }
+  }, [currentTool, activeSection, wall, canvasItems, addCanvasItem]);
+
+  const handleNavigate = useCallback((delta: number) => {
+    moveDecoratingCamera(delta);
+    generateSectionsUpToDepth(zPosition + SECTION_LENGTH * 3);
+  }, [moveDecoratingCamera, generateSectionsUpToDepth, zPosition]);
+
+  const handleExit = useCallback(() => {
+    exitDecoratingMode();
+  }, [exitDecoratingMode]);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        undoStroke();
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+        e.preventDefault();
+        redoStroke();
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+        e.preventDefault();
+        copySelectedItems();
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
+        e.preventDefault();
+        pasteItems();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [undoStroke, redoStroke, copySelectedItems, pasteItems]);
+
+  if (!decoratingState || !wall) return null;
+
+  return (
+    <>
+      {/* Info display at top of screen */}
+      <DecoratingInfo
+        wall={wall}
+        zPosition={zPosition}
+      />
+
+      {/* Drawing tools toolbar at bottom */}
+      <CanvasToolbar
+        currentTool={currentTool}
+        onToolChange={setCurrentTool}
+        brushColor={brushColor}
+        onColorChange={setBrushColor}
+        brushSize={brushSize}
+        onSizeChange={setBrushSize}
+        brushStyle={brushStyle}
+        onStyleChange={setBrushStyle}
+        onUndo={undoStroke}
+        onRedo={redoStroke}
+        canUndo={canUndo()}
+        canRedo={canRedo()}
+        onExit={handleExit}
+        onNavigateLeft={() => handleNavigate(wall === 'right' ? 2 : -2)}
+        onNavigateRight={() => handleNavigate(wall === 'right' ? -2 : 2)}
+        onHoldStart={() => {}}
+        onHoldEnd={() => {}}
+        isHoldingLeft={false}
+        isHoldingRight={false}
+      />
+    </>
+  );
+};
