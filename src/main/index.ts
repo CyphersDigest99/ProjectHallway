@@ -10,6 +10,28 @@ let mainWindow: BrowserWindow | null = null;
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
 
+// --- Input validation helpers ---
+
+/** Validate that a URL uses http or https protocol only */
+const isAllowedUrl = (url: string): boolean => {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+};
+
+/** Validate a file path: must be absolute, no null bytes, no relative traversal tricks */
+const isValidPath = (filePath: string): boolean => {
+  if (!filePath || typeof filePath !== 'string') return false;
+  if (filePath.includes('\0')) return false; // null byte injection
+  const resolved = path.resolve(filePath);
+  // Ensure the resolved path matches what was given (catches /../ traversal)
+  // Normalize both to compare fairly across platforms
+  return path.normalize(resolved) === path.normalize(filePath);
+};
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
@@ -71,6 +93,9 @@ ipcMain.handle('select-directory', async () => {
 });
 
 ipcMain.handle('open-directory', async (_, directoryPath: string) => {
+  if (!isValidPath(directoryPath)) {
+    throw new Error('Invalid directory path');
+  }
   try {
     await shell.openPath(directoryPath);
   } catch (error) {
@@ -124,6 +149,9 @@ ipcMain.handle('load-state', async () => {
 });
 
 ipcMain.handle('read-file', async (_, filePath: string) => {
+  if (!isValidPath(filePath)) {
+    throw new Error('Invalid file path');
+  }
   try {
     const buffer = fs.readFileSync(filePath);
     return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
@@ -171,6 +199,9 @@ ipcMain.handle('select-app', async () => {
 });
 
 ipcMain.handle('open-url', async (_, url: string) => {
+  if (!isAllowedUrl(url)) {
+    throw new Error('Only http and https URLs are allowed');
+  }
   try {
     await shell.openExternal(url);
   } catch (error) {
@@ -180,6 +211,9 @@ ipcMain.handle('open-url', async (_, url: string) => {
 });
 
 ipcMain.handle('open-path', async (_, filePath: string) => {
+  if (!isValidPath(filePath)) {
+    throw new Error('Invalid file path');
+  }
   try {
     await shell.openPath(filePath);
   } catch (error) {
@@ -189,6 +223,9 @@ ipcMain.handle('open-path', async (_, filePath: string) => {
 });
 
 ipcMain.handle('get-file-icon', async (_, filePath: string) => {
+  if (!isValidPath(filePath)) {
+    throw new Error('Invalid file path');
+  }
   try {
     const icon = await app.getFileIcon(filePath);
     return icon.toDataURL();
