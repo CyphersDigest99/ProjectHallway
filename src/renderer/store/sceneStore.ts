@@ -236,6 +236,17 @@ const getSignPosition = (depth: number, wall: WallSide): Vector3 => {
   }
 };
 
+// Single debounced save — replaces the 25+ individual setTimeout calls.
+// Each call resets the timer so only one save fires after activity settles.
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+const debouncedSave = (getSaveState: () => { saveState: () => Promise<void> }) => {
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    getSaveState().saveState();
+  }, 300);
+};
+
 export const useSceneStore = create<SceneStore>((set, get) => ({
   objects: [],
   signs: [],
@@ -293,7 +304,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
       objects: [...state.objects, newObject],
     }));
 
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
     return newObject;
   },
 
@@ -302,7 +313,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
       objects: state.objects.filter((obj) => obj.id !== id),
       selectedObjectId: state.selectedObjectId === id ? null : state.selectedObjectId,
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   updateObject: (id, updates) => {
@@ -311,7 +322,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
         obj.id === id ? { ...obj, ...updates } : obj
       ),
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   selectObject: (id) => {
@@ -337,7 +348,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
       signs: [...state.signs, newSign],
     }));
 
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
     return newSign;
   },
 
@@ -345,7 +356,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
     set((state) => ({
       signs: state.signs.filter((sign) => sign.id !== id),
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   updateSign: (id, updates) => {
@@ -363,7 +374,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
         return updated;
       }),
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   generateSignsUpToDepth: (depth) => {
@@ -434,7 +445,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
       lights: [...state.lights, newLight],
     }));
 
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
     return newLight;
   },
 
@@ -442,7 +453,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
     set((state) => ({
       lights: state.lights.filter((light) => light.id !== id),
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   updateLight: (id, updates) => {
@@ -451,7 +462,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
         light.id === id ? { ...light, ...updates } : light
       ),
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   startPlacingLight: (wall, position, depth) => {
@@ -529,14 +540,14 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
       wallImages: [...state.wallImages, newWallImage],
       pendingWallpaper: null,
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   removeWallImage: (id) => {
     set((state) => ({
       wallImages: state.wallImages.filter((img) => img.id !== id),
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   // Wall section management
@@ -579,7 +590,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
         section.id === id ? { ...section, ...updates } : section
       ),
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   getWallSectionAt: (wall, z) => {
@@ -607,7 +618,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
       canvasItems: [...state.canvasItems, newItem],
     }));
 
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
     return newItem;
   },
 
@@ -617,7 +628,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
         item.id === id ? { ...item, ...updates } as AnyCanvasItem : item
       ),
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   removeCanvasItem: (id) => {
@@ -625,7 +636,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
       canvasItems: state.canvasItems.filter((item) => item.id !== id),
       selectedCanvasItemId: state.selectedCanvasItemId === id ? null : state.selectedCanvasItemId,
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   selectCanvasItem: (id) => {
@@ -640,7 +651,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
         item.id === id ? { ...item, zIndex: maxZIndex + 1 } : item
       ),
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   sendToBack: (id) => {
@@ -651,7 +662,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
         item.id === id ? { ...item, zIndex: minZIndex - 1 } : item
       ),
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   addStrokeToDrawing: (itemId, stroke) => {
@@ -665,7 +676,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
       strokeUndoStack: [...state.strokeUndoStack, { drawingId: itemId, stroke }],
       strokeRedoStack: [],
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   undoStroke: () => {
@@ -685,7 +696,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
       strokeUndoStack: state.strokeUndoStack.slice(0, -1),
       strokeRedoStack: [...state.strokeRedoStack, lastAction],
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   redoStroke: () => {
@@ -703,7 +714,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
       strokeUndoStack: [...state.strokeUndoStack, lastAction],
       strokeRedoStack: state.strokeRedoStack.slice(0, -1),
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   canUndo: () => {
@@ -729,7 +740,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
       dateMarkers: [...state.dateMarkers, newMarker],
     }));
 
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
     return newMarker;
   },
 
@@ -748,14 +759,14 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
         return updated;
       }),
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   removeDateMarker: (id) => {
     set((state) => ({
       dateMarkers: state.dateMarkers.filter((marker) => marker.id !== id),
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   startPlacingDateMarker: (wall, position, depth) => {
@@ -948,7 +959,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
     set((state) => ({
       settings: { ...state.settings, ...updates },
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   updateWallSettings: (wall, updates) => {
@@ -961,7 +972,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
         },
       },
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   saveState: async () => {
