@@ -1062,62 +1062,40 @@ const InfiniteTunnel: React.FC<{
   wallSections: WallSection[];
 }> = ({ cameraZ, onWallClick, wallSettings, wallSections }) => {
   const segmentsRef = useRef<THREE.Group>(null);
-  const lastCameraZ = useRef(0);
-  const [segmentPositions, setSegmentPositions] = useState<number[]>(
-    Array.from({ length: NUM_SEGMENTS }, (_, i) => -i * SEGMENT_DEPTH)
-  );
 
-  // Position all segments based on camera position
+  // Discrete base position — only changes when crossing a SEGMENT_DEPTH boundary.
+  // This keeps segmentPositions stable between boundaries, preventing
+  // 25 TunnelSegment re-renders on every scroll frame.
+  const baseSegmentZ = Math.floor(-cameraZ / SEGMENT_DEPTH) * SEGMENT_DEPTH;
+
+  const segmentPositions = useMemo(() =>
+    Array.from({ length: NUM_SEGMENTS }, (_, i) =>
+      baseSegmentZ + (i - SEGMENT_BUFFER) * SEGMENT_DEPTH
+    ),
+  [baseSegmentZ]);
+
+  // Update Three.js group positions directly each frame for smooth visuals.
+  // No React state update here — positions are derived from cameraZ via useMemo above.
   useFrame(() => {
     if (!segmentsRef.current) return;
-
     const camZ = -cameraZ;
-
-    // Calculate the "base" position - center of our segment pool
-    // This ensures segments are always distributed around the camera
     const baseZ = Math.floor(camZ / SEGMENT_DEPTH) * SEGMENT_DEPTH;
 
-    let needsUpdate = false;
-    const newPositions = segmentPositions.map((_, index) => {
-      // Distribute segments evenly: some behind, most ahead
-      const offset = (index - SEGMENT_BUFFER) * SEGMENT_DEPTH;
-      const targetZ = baseZ + offset;
-      return targetZ;
-    });
-
-    // Check if positions changed
-    for (let i = 0; i < newPositions.length; i++) {
-      if (Math.abs(newPositions[i] - segmentPositions[i]) > 0.01) {
-        needsUpdate = true;
-        break;
-      }
-    }
-
-    // Update THREE.js group positions directly
     segmentsRef.current.children.forEach((segment, index) => {
-      const targetZ = newPositions[index];
-      if (Math.abs(segment.position.z - targetZ) > 0.01) {
-        segment.position.z = targetZ;
-      }
+      const targetZ = baseZ + (index - SEGMENT_BUFFER) * SEGMENT_DEPTH;
+      segment.position.z = targetZ;
     });
-
-    // Update React state for wall section lookups
-    if (needsUpdate) {
-      setSegmentPositions(newPositions);
-    }
-
-    lastCameraZ.current = cameraZ;
   });
 
   return (
     <group ref={segmentsRef}>
-      {Array.from({ length: NUM_SEGMENTS }).map((_, i) => (
-        <group key={i} position={[0, 0, segmentPositions[i]]}>
+      {segmentPositions.map((pos, i) => (
+        <group key={i} position={[0, 0, pos]}>
           <TunnelSegment
             onWallClick={onWallClick}
             wallSettings={wallSettings}
             wallSections={wallSections}
-            segmentZ={segmentPositions[i]}
+            segmentZ={pos}
           />
         </group>
       ))}
