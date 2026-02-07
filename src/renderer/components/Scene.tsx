@@ -482,7 +482,6 @@ const DecoratingDrawingSurface: React.FC<{
   wallSections: WallSection[];
 }> = ({ wall, zPosition, brushSettings, onStrokeComplete, canvasItems, wallSections }) => {
   const { camera, raycaster, gl } = useThree();
-  const [isDrawing, setIsDrawing] = useState(false);
   const currentStrokeRef = useRef<{ x: number; y: number }[]>([]);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const backgroundCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -491,6 +490,11 @@ const DecoratingDrawingSurface: React.FC<{
   // Reuse raycasting objects to avoid allocations in the hot path
   const mouseVecRef = useRef(new THREE.Vector2());
   const intersectionVecRef = useRef(new THREE.Vector3());
+  // Use refs for drawing state so DOM event handlers always see current values
+  // (avoids the React state timing gap that breaks touch/stylus input).
+  const isDrawingRef = useRef(false);
+  const brushSettingsRef = useRef(brushSettings);
+  brushSettingsRef.current = brushSettings;
 
   const CANVAS_W = 1600;
   const CANVAS_H = 1000;
@@ -648,94 +652,105 @@ const DecoratingDrawingSurface: React.FC<{
     return null;
   }, [camera, raycaster, gl, wallPlane, worldToCanvas]);
 
+  // Keep refs in sync so DOM event handlers always read current values.
+  // This avoids stale closures — the handlers are attached once and read refs.
+  const activeDrawingRef = useRef(activeDrawing);
+  activeDrawingRef.current = activeDrawing;
+  const onStrokeCompleteRef = useRef(onStrokeComplete);
+  onStrokeCompleteRef.current = onStrokeComplete;
+  const getCanvasPointRef = useRef(getCanvasPoint);
+  getCanvasPointRef.current = getCanvasPoint;
+
   const handlePointerDown = useCallback((e: ThreeEvent<PointerEvent>) => {
-    if (!brushSettings || brushSettings.tool !== 'draw' || e.button !== 0) return;
+    const bs = brushSettingsRef.current;
+    if (!bs || bs.tool !== 'draw' || e.button !== 0) return;
     e.stopPropagation();
 
-    const point = getCanvasPoint(e.clientX, e.clientY);
+    const point = getCanvasPointRef.current(e.clientX, e.clientY);
     if (point) {
-      setIsDrawing(true);
+      // Set ref immediately (synchronous) so DOM handlers work right away
+      isDrawingRef.current = true;
       currentStrokeRef.current = [point];
 
-      // Capture pointer on the canvas DOM element so move/up events keep
-      // firing even if the finger/pen drifts off the mesh (critical for touch).
-      const domEl = gl.domElement;
-      domEl.setPointerCapture(e.nativeEvent.pointerId);
+      // Capture pointer so move/up events keep firing on touch/stylus
+      gl.domElement.setPointerCapture(e.nativeEvent.pointerId);
 
       // Render point immediately for visual feedback
       if (canvasRef.current && textureRef.current) {
         const ctx = canvasRef.current.getContext('2d')!;
         const tempStroke: DrawingStroke = {
           points: [point],
-          color: brushSettings.color,
-          size: brushSettings.size,
-          style: brushSettings.style as DrawingStroke['style'],
+          color: bs.color,
+          size: bs.size,
+          style: bs.style as DrawingStroke['style'],
         };
         renderStrokeToContext(ctx, tempStroke);
         textureRef.current.needsUpdate = true;
       }
     }
-  }, [brushSettings, getCanvasPoint, gl]);
+  }, [gl]);
 
-  // Use raw DOM events for move/up so drawing continues even when the
-  // touch/pen drifts off the mesh (R3F's onPointerMove requires raycast hits).
-  const handleDOMPointerMove = useCallback((e: PointerEvent) => {
-    if (!isDrawing || !brushSettings) return;
-
-    const point = getCanvasPoint(e.clientX, e.clientY);
-    if (point) {
-      currentStrokeRef.current.push(point);
-
-      // Double-buffered render: composite background + current stroke only
-      if (canvasRef.current && backgroundCanvasRef.current && textureRef.current) {
-        const ctx = canvasRef.current.getContext('2d')!;
-        ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
-
-        // Blit the pre-rendered background (all committed strokes) in one operation
-        ctx.drawImage(backgroundCanvasRef.current, 0, 0);
-
-        // Render only the current in-progress stroke
-        const tempStroke: DrawingStroke = {
-          points: currentStrokeRef.current,
-          color: brushSettings.color,
-          size: brushSettings.size,
-          style: brushSettings.style as DrawingStroke['style'],
-        };
-        renderStrokeToContext(ctx, tempStroke);
-        textureRef.current.needsUpdate = true;
-      }
-    }
-  }, [isDrawing, brushSettings, getCanvasPoint]);
-
-  const handleDOMPointerUp = useCallback(() => {
-    if (isDrawing && currentStrokeRef.current.length > 1 && activeDrawing && brushSettings) {
-      const stroke: DrawingStroke = {
-        points: currentStrokeRef.current,
-        color: brushSettings.color,
-        size: brushSettings.size,
-        style: brushSettings.style as DrawingStroke['style'],
-      };
-      onStrokeComplete(activeDrawing.id, stroke);
-    }
-    setIsDrawing(false);
-    currentStrokeRef.current = [];
-  }, [isDrawing, brushSettings, activeDrawing, onStrokeComplete]);
-
-  // Attach/detach raw DOM listeners when drawing state changes.
-  // This ensures touch/pen drawing continues outside the mesh bounds.
+  // Attach raw DOM pointermove/pointerup listeners once on mount.
+  // They read from refs so they always see the latest values without
+  // needing to be re-attached (which caused the stylus timing gap).
   useEffect(() => {
     const domEl = gl.domElement;
-    if (isDrawing) {
-      domEl.addEventListener('pointermove', handleDOMPointerMove);
-      domEl.addEventListener('pointerup', handleDOMPointerUp);
-      domEl.addEventListener('pointercancel', handleDOMPointerUp);
-    }
-    return () => {
-      domEl.removeEventListener('pointermove', handleDOMPointerMove);
-      domEl.removeEventListener('pointerup', handleDOMPointerUp);
-      domEl.removeEventListener('pointercancel', handleDOMPointerUp);
+
+    const onPointerMove = (e: PointerEvent) => {
+      if (!isDrawingRef.current) return;
+      const bs = brushSettingsRef.current;
+      if (!bs) return;
+
+      const point = getCanvasPointRef.current(e.clientX, e.clientY);
+      if (point) {
+        currentStrokeRef.current.push(point);
+
+        // Double-buffered render: composite background + current stroke only
+        if (canvasRef.current && backgroundCanvasRef.current && textureRef.current) {
+          const ctx = canvasRef.current.getContext('2d')!;
+          ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
+          ctx.drawImage(backgroundCanvasRef.current, 0, 0);
+
+          const tempStroke: DrawingStroke = {
+            points: currentStrokeRef.current,
+            color: bs.color,
+            size: bs.size,
+            style: bs.style as DrawingStroke['style'],
+          };
+          renderStrokeToContext(ctx, tempStroke);
+          textureRef.current.needsUpdate = true;
+        }
+      }
     };
-  }, [isDrawing, handleDOMPointerMove, handleDOMPointerUp, gl]);
+
+    const onPointerUp = () => {
+      if (!isDrawingRef.current) return;
+      const bs = brushSettingsRef.current;
+      const drawing = activeDrawingRef.current;
+
+      if (currentStrokeRef.current.length > 1 && drawing && bs) {
+        const stroke: DrawingStroke = {
+          points: currentStrokeRef.current,
+          color: bs.color,
+          size: bs.size,
+          style: bs.style as DrawingStroke['style'],
+        };
+        onStrokeCompleteRef.current(drawing.id, stroke);
+      }
+      isDrawingRef.current = false;
+      currentStrokeRef.current = [];
+    };
+
+    domEl.addEventListener('pointermove', onPointerMove);
+    domEl.addEventListener('pointerup', onPointerUp);
+    domEl.addEventListener('pointercancel', onPointerUp);
+
+    return () => {
+      domEl.removeEventListener('pointermove', onPointerMove);
+      domEl.removeEventListener('pointerup', onPointerUp);
+      domEl.removeEventListener('pointercancel', onPointerUp);
+    };
+  }, [gl]);
 
   if (!activeSection || !textureRef.current) return null;
 
