@@ -522,29 +522,30 @@ const DecoratingDrawingSurface: React.FC<{
     }
   }, [wall]);
 
-  // Convert 3D world point to 2D canvas coordinates
+  // Convert 3D world point to 2D canvas coordinates.
+  // Clamps to canvas bounds instead of rejecting out-of-range points,
+  // so drawing works across the full visible area of the wall.
   const worldToCanvas = useCallback((worldPoint: THREE.Vector3): { x: number; y: number } | null => {
     if (!activeSection) return null;
     const h = TUNNEL_HEIGHT / 2;
     const worldZ = -worldPoint.z;
     const sectionLen = activeSection.zEnd - activeSection.zStart;
 
-    if (worldZ < activeSection.zStart || worldZ >= activeSection.zEnd) return null;
-
     const zNorm = (worldZ - activeSection.zStart) / sectionLen;
+    const clampedX = Math.max(0, Math.min(CANVAS_W, zNorm * CANVAS_W));
 
     switch (wall) {
       case 'left':
       case 'right':
         return {
-          x: zNorm * CANVAS_W,
-          y: ((h - worldPoint.y) / TUNNEL_HEIGHT) * CANVAS_H,
+          x: clampedX,
+          y: Math.max(0, Math.min(CANVAS_H, ((h - worldPoint.y) / TUNNEL_HEIGHT) * CANVAS_H)),
         };
       case 'floor':
       case 'ceiling':
         return {
-          x: zNorm * CANVAS_W,
-          y: ((TUNNEL_WIDTH / 2 - worldPoint.x) / TUNNEL_WIDTH) * CANVAS_H,
+          x: clampedX,
+          y: Math.max(0, Math.min(CANVAS_H, ((TUNNEL_WIDTH / 2 - worldPoint.x) / TUNNEL_WIDTH) * CANVAS_H)),
         };
     }
   }, [activeSection, wall]);
@@ -656,6 +657,11 @@ const DecoratingDrawingSurface: React.FC<{
       setIsDrawing(true);
       currentStrokeRef.current = [point];
 
+      // Capture pointer on the canvas DOM element so move/up events keep
+      // firing even if the finger/pen drifts off the mesh (critical for touch).
+      const domEl = gl.domElement;
+      domEl.setPointerCapture(e.nativeEvent.pointerId);
+
       // Render point immediately for visual feedback
       if (canvasRef.current && textureRef.current) {
         const ctx = canvasRef.current.getContext('2d')!;
@@ -669,9 +675,11 @@ const DecoratingDrawingSurface: React.FC<{
         textureRef.current.needsUpdate = true;
       }
     }
-  }, [brushSettings, getCanvasPoint]);
+  }, [brushSettings, getCanvasPoint, gl]);
 
-  const handlePointerMove = useCallback((e: ThreeEvent<PointerEvent>) => {
+  // Use raw DOM events for move/up so drawing continues even when the
+  // touch/pen drifts off the mesh (R3F's onPointerMove requires raycast hits).
+  const handleDOMPointerMove = useCallback((e: PointerEvent) => {
     if (!isDrawing || !brushSettings) return;
 
     const point = getCanvasPoint(e.clientX, e.clientY);
@@ -699,7 +707,7 @@ const DecoratingDrawingSurface: React.FC<{
     }
   }, [isDrawing, brushSettings, getCanvasPoint]);
 
-  const handlePointerUp = useCallback(() => {
+  const handleDOMPointerUp = useCallback(() => {
     if (isDrawing && currentStrokeRef.current.length > 1 && activeDrawing && brushSettings) {
       const stroke: DrawingStroke = {
         points: currentStrokeRef.current,
@@ -713,6 +721,22 @@ const DecoratingDrawingSurface: React.FC<{
     currentStrokeRef.current = [];
   }, [isDrawing, brushSettings, activeDrawing, onStrokeComplete]);
 
+  // Attach/detach raw DOM listeners when drawing state changes.
+  // This ensures touch/pen drawing continues outside the mesh bounds.
+  useEffect(() => {
+    const domEl = gl.domElement;
+    if (isDrawing) {
+      domEl.addEventListener('pointermove', handleDOMPointerMove);
+      domEl.addEventListener('pointerup', handleDOMPointerUp);
+      domEl.addEventListener('pointercancel', handleDOMPointerUp);
+    }
+    return () => {
+      domEl.removeEventListener('pointermove', handleDOMPointerMove);
+      domEl.removeEventListener('pointerup', handleDOMPointerUp);
+      domEl.removeEventListener('pointercancel', handleDOMPointerUp);
+    };
+  }, [isDrawing, handleDOMPointerMove, handleDOMPointerUp, gl]);
+
   if (!activeSection || !textureRef.current) return null;
 
   return (
@@ -720,9 +744,6 @@ const DecoratingDrawingSurface: React.FC<{
       position={position}
       rotation={rotation}
       onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
-      onPointerLeave={handlePointerUp}
       renderOrder={10}
     >
       <planeGeometry args={[planeWidth, planeHeight]} />
