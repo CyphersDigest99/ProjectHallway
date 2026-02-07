@@ -24,7 +24,7 @@ export const WallTextBox: React.FC<WallTextBoxProps> = ({
   onSelect,
   onContextMenu,
 }) => {
-  const { updateCanvasItem } = useSceneStore();
+  const updateCanvasItem = useSceneStore(s => s.updateCanvasItem);
   const { camera, gl } = useThree();
 
   const [isEditing, setIsEditing] = useState(false);

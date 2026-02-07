@@ -11,6 +11,7 @@ import { CanvasMode } from './components/canvas';
 import { DecoratingMode3D } from './components/canvas/DecoratingMode3D';
 import { CanvasContextMenu } from './components/ui/CanvasContextMenu';
 import { useSceneStore } from './store/sceneStore';
+import { useShallow } from 'zustand/react/shallow';
 import { SceneObject, ObjectType, HighwaySign, CeilingLight, WallSide, AnyCanvasItem, CanvasTextItem, CanvasImageItem, CanvasDirectoryItem, CanvasHyperlinkItem, CanvasAppShortcutItem, CanvasFileShortcutItem, DateMarker, LightFixtureStyle } from '../shared/types';
 import { DateMarkerModal } from './components/ui/DateMarkerModal';
 import { LightFixtureModal } from './components/ui/LightFixtureModal';
@@ -89,7 +90,43 @@ const App: React.FC = () => {
     pendingLight, startPlacingLight, confirmLightPlacement, cancelLightPlacement, removeLight,
     // Wall sections
     updateWallSection, wallSections,
-  } = useSceneStore();
+  } = useSceneStore(useShallow(s => ({
+    objects: s.objects,
+    signs: s.signs,
+    lights: s.lights,
+    addObject: s.addObject,
+    updateObject: s.updateObject,
+    removeObject: s.removeObject,
+    updateSign: s.updateSign,
+    removeSign: s.removeSign,
+    updateWallSettings: s.updateWallSettings,
+    setPendingWallpaper: s.setPendingWallpaper,
+    clearPendingWallpaper: s.clearPendingWallpaper,
+    confirmWallImage: s.confirmWallImage,
+    loadState: s.loadState,
+    navigationMode: s.navigationMode,
+    canvasModeState: s.canvasModeState,
+    decoratingState: s.decoratingState,
+    enterSightseeingMode: s.enterSightseeingMode,
+    enterCanvasMode: s.enterCanvasMode,
+    enterDecoratingMode: s.enterDecoratingMode,
+    addCanvasItem: s.addCanvasItem,
+    selectedCanvasItemId: s.selectedCanvasItemId,
+    dateMarkers: s.dateMarkers,
+    pendingDateMarker: s.pendingDateMarker,
+    startPlacingDateMarker: s.startPlacingDateMarker,
+    confirmDateMarkerPlacement: s.confirmDateMarkerPlacement,
+    cancelDateMarkerPlacement: s.cancelDateMarkerPlacement,
+    removeDateMarker: s.removeDateMarker,
+    updateDateMarker: s.updateDateMarker,
+    pendingLight: s.pendingLight,
+    startPlacingLight: s.startPlacingLight,
+    confirmLightPlacement: s.confirmLightPlacement,
+    cancelLightPlacement: s.cancelLightPlacement,
+    removeLight: s.removeLight,
+    updateWallSection: s.updateWallSection,
+    wallSections: s.wallSections,
+  })));
 
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [wallContextMenu, setWallContextMenu] = useState<WallContextMenuState | null>(null);

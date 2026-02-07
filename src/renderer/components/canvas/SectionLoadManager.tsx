@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useCallback } from 'react';
 import * as THREE from 'three';
 import { useSceneStore } from '../../store/sceneStore';
+import { useShallow } from 'zustand/react/shallow';
 
 // Distance thresholds for loading/unloading sections
 const LOAD_DISTANCE = 50; // Load sections within 50m of camera
@@ -65,7 +66,12 @@ export const SectionLoadManager: React.FC<SectionLoadManagerProps> = ({
     loadedSections,
     loadSection,
     unloadSection,
-  } = useSceneStore();
+  } = useSceneStore(useShallow(s => ({
+    wallSections: s.wallSections,
+    loadedSections: s.loadedSections,
+    loadSection: s.loadSection,
+    unloadSection: s.unloadSection,
+  })));
 
   const lastCameraZ = useRef(cameraZ);
   const cleanupIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -132,13 +138,13 @@ export const SectionLoadManager: React.FC<SectionLoadManagerProps> = ({
 
 // Hook for checking if a section is loaded
 export const useSectionLoaded = (sectionId: string): boolean => {
-  const { loadedSections } = useSceneStore();
+  const loadedSections = useSceneStore(s => s.loadedSections);
   return loadedSections.get(sectionId)?.loaded ?? false;
 };
 
 // Hook for getting all loaded sections
 export const useLoadedSections = (): string[] => {
-  const { loadedSections } = useSceneStore();
+  const loadedSections = useSceneStore(s => s.loadedSections);
   const loadedIds: string[] = [];
 
   loadedSections.forEach((value, key) => {

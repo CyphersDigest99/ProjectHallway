@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useSceneStore } from '../../store/sceneStore';
+import { useShallow } from 'zustand/react/shallow';
 import { CanvasToolbar, CanvasTool } from './CanvasToolbar';
 import { CanvasItem } from './CanvasItem';
 import { DrawingCanvas } from './DrawingCanvas';
@@ -131,7 +132,24 @@ export const CanvasMode: React.FC<CanvasModeProps> = ({ onContextMenu }) => {
     getWallSectionAt,
     generateSectionsUpToDepth,
     maxGeneratedSectionDepth,
-  } = useSceneStore();
+  } = useSceneStore(useShallow(s => ({
+    canvasModeState: s.canvasModeState,
+    canvasItems: s.canvasItems,
+    wallSections: s.wallSections,
+    selectedCanvasItemId: s.selectedCanvasItemId,
+    selectCanvasItem: s.selectCanvasItem,
+    addCanvasItem: s.addCanvasItem,
+    addStrokeToDrawing: s.addStrokeToDrawing,
+    exitCanvasMode: s.exitCanvasMode,
+    undoStroke: s.undoStroke,
+    redoStroke: s.redoStroke,
+    canUndo: s.canUndo,
+    canRedo: s.canRedo,
+    updateCanvasZPosition: s.updateCanvasZPosition,
+    getWallSectionAt: s.getWallSectionAt,
+    generateSectionsUpToDepth: s.generateSectionsUpToDepth,
+    maxGeneratedSectionDepth: s.maxGeneratedSectionDepth,
+  })));
 
   const [currentTool, setCurrentTool] = useState<CanvasTool>('draw');
   const [brushColor, setBrushColor] = useState('#ff0000');

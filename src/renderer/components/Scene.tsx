@@ -4,6 +4,7 @@ import { Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { SceneObject, HighwaySign as HighwaySignType, CeilingLight as CeilingLightType, SceneSettings, WallSettings, WallImage, WallSide, NavigationMode, Vector3 as Vec3, CanvasDrawingItem, DrawingStroke, WallSection, DateMarker as DateMarkerType } from '../../shared/types';
 import { useSceneStore } from '../store/sceneStore';
+import { useShallow } from 'zustand/react/shallow';
 import { HighwaySign } from './objects/HighwaySign';
 import { CeilingLight } from './objects/CeilingLight';
 import { DateMarker } from './objects/DateMarker';
@@ -1113,7 +1114,9 @@ const PictureFrame: React.FC<{
   const [hovered, setHovered] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [dragPosition, setDragPosition] = useState<THREE.Vector3 | null>(null);
-  const { selectedObjectId, selectObject, updateObject } = useSceneStore();
+  const selectedObjectId = useSceneStore(s => s.selectedObjectId);
+  const selectObject = useSceneStore(s => s.selectObject);
+  const updateObject = useSceneStore(s => s.updateObject);
   const { camera, gl, raycaster } = useThree();
   const isSelected = selectedObjectId === object.id;
 
@@ -1311,7 +1314,9 @@ const Object3D: React.FC<{
   const [hovered, setHovered] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [dragPosition, setDragPosition] = useState<THREE.Vector3 | null>(null);
-  const { selectedObjectId, selectObject, updateObject } = useSceneStore();
+  const selectedObjectId = useSceneStore(s => s.selectedObjectId);
+  const selectObject = useSceneStore(s => s.selectObject);
+  const updateObject = useSceneStore(s => s.updateObject);
   const { camera, gl, raycaster } = useThree();
   const isSelected = selectedObjectId === object.id;
 
@@ -1734,7 +1739,22 @@ const SceneContent: React.FC<SceneProps & {
   sightseeingWall: WallSide | null;
   decoratingState: { wall: WallSide; zPosition: number; cameraOffset: number } | null;
 }> = ({ onContextMenu, onSignContextMenu, onLightContextMenu, onDateMarkerContextMenu, onHover, onWallClick, onConfirmWallpaper, onCancelWallpaper, scrollZ, mouseOffset, isLooking, lastLookTime, navigationMode, sightseeingFocusPoint, sightseeingWall, decoratingState }) => {
-  const { objects, signs, lights, wallImages, wallSections, canvasItems, dateMarkers, pendingWallpaper, settings, generateSignsUpToDepth, generateLightsUpToDepth, generateSectionsUpToDepth, decoratingBrushSettings, addStrokeToDrawing } = useSceneStore();
+  const { objects, signs, lights, wallImages, wallSections, canvasItems, dateMarkers, pendingWallpaper, settings, generateSignsUpToDepth, generateLightsUpToDepth, generateSectionsUpToDepth, decoratingBrushSettings, addStrokeToDrawing } = useSceneStore(useShallow(s => ({
+    objects: s.objects,
+    signs: s.signs,
+    lights: s.lights,
+    wallImages: s.wallImages,
+    wallSections: s.wallSections,
+    canvasItems: s.canvasItems,
+    dateMarkers: s.dateMarkers,
+    pendingWallpaper: s.pendingWallpaper,
+    settings: s.settings,
+    generateSignsUpToDepth: s.generateSignsUpToDepth,
+    generateLightsUpToDepth: s.generateLightsUpToDepth,
+    generateSectionsUpToDepth: s.generateSectionsUpToDepth,
+    decoratingBrushSettings: s.decoratingBrushSettings,
+    addStrokeToDrawing: s.addStrokeToDrawing,
+  })));
 
   // Get drawings that have strokes
   const drawingsWithStrokes = useMemo(() => {
@@ -1894,7 +1914,14 @@ export const Scene: React.FC<SceneProps> = (props) => {
   const [lastLookTime, setLastLookTime] = useState(0);
   const [lastFloorClickTime, setLastFloorClickTime] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
-  const { settings, navigationMode, sightseeingState, decoratingState, exitSightseeingMode, exitDecoratingMode } = useSceneStore();
+  const { settings, navigationMode, sightseeingState, decoratingState, exitSightseeingMode, exitDecoratingMode } = useSceneStore(useShallow(s => ({
+    settings: s.settings,
+    navigationMode: s.navigationMode,
+    sightseeingState: s.sightseeingState,
+    decoratingState: s.decoratingState,
+    exitSightseeingMode: s.exitSightseeingMode,
+    exitDecoratingMode: s.exitDecoratingMode,
+  })));
 
   // Get sightseeing state
   const sightseeingFocusPoint = sightseeingState?.focusPoint || null;

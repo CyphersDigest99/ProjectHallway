@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { AnyCanvasItem, WallTextureType, WallSide } from '../../../shared/types';
 import { useSceneStore } from '../../store/sceneStore';
+import { useShallow } from 'zustand/react/shallow';
 
 interface CanvasContextMenuProps {
   x: number;
@@ -44,7 +45,14 @@ export const CanvasContextMenu: React.FC<CanvasContextMenuProps> = ({
   onChangeWallColor,
 }) => {
   const menuRef = useRef<HTMLDivElement>(null);
-  const { removeCanvasItem, bringToFront, sendToBack, updateWallSection, wallSections, exitCanvasMode } = useSceneStore();
+  const { removeCanvasItem, bringToFront, sendToBack, updateWallSection, wallSections, exitCanvasMode } = useSceneStore(useShallow(s => ({
+    removeCanvasItem: s.removeCanvasItem,
+    bringToFront: s.bringToFront,
+    sendToBack: s.sendToBack,
+    updateWallSection: s.updateWallSection,
+    wallSections: s.wallSections,
+    exitCanvasMode: s.exitCanvasMode,
+  })));
   const [showTextureSubmenu, setShowTextureSubmenu] = React.useState(false);
 
   const currentSection = wallSections.find((s) => s.id === sectionId);

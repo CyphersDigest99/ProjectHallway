@@ -20,7 +20,9 @@ export const PrimitiveObject: React.FC<PrimitiveObjectProps> = ({
   const [isDragging, setIsDragging] = useState(false);
   const [hovered, setHovered] = useState(false);
 
-  const { updateObject, selectedObjectId, selectObject } = useSceneStore();
+  const updateObject = useSceneStore(s => s.updateObject);
+  const selectedObjectId = useSceneStore(s => s.selectedObjectId);
+  const selectObject = useSceneStore(s => s.selectObject);
   const isSelected = selectedObjectId === object.id;
 
   // Handle click to open directory

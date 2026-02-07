@@ -20,7 +20,8 @@ export const ImageObject: React.FC<ImageObjectProps> = ({
   const [hovered, setHovered] = useState(false);
   const [texture, setTexture] = useState<THREE.Texture | null>(null);
 
-  const { selectedObjectId, selectObject } = useSceneStore();
+  const selectedObjectId = useSceneStore(s => s.selectedObjectId);
+  const selectObject = useSceneStore(s => s.selectObject);
   const isSelected = selectedObjectId === object.id;
 
   // Load texture from file path

@@ -112,7 +112,7 @@ const formatDate = (isoDate: string, showTime: boolean): string => {
 
 export const DateMarker: React.FC<DateMarkerProps> = ({ marker, onContextMenu }) => {
   const groupRef = useRef<THREE.Group>(null);
-  const { updateDateMarker } = useSceneStore();
+  const updateDateMarker = useSceneStore(s => s.updateDateMarker);
   const { camera, gl, raycaster } = useThree();
 
   const [isDragging, setIsDragging] = useState(false);

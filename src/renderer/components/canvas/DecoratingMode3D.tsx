@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { useSceneStore } from '../../store/sceneStore';
+import { useShallow } from 'zustand/react/shallow';
 import { DecoratingInfo } from './DecoratingToolbar';
 import { CanvasToolbar, CanvasTool } from './CanvasToolbar';
 import { DrawingStyle, CanvasDrawingItem, AnyCanvasItem } from '../../../shared/types';
@@ -31,7 +32,23 @@ export const DecoratingMode3D: React.FC<DecoratingMode3DProps> = ({ onContextMen
     copySelectedItems,
     pasteItems,
     setDecoratingBrushSettings,
-  } = useSceneStore();
+  } = useSceneStore(useShallow(s => ({
+    decoratingState: s.decoratingState,
+    canvasItems: s.canvasItems,
+    wallSections: s.wallSections,
+    addCanvasItem: s.addCanvasItem,
+    exitDecoratingMode: s.exitDecoratingMode,
+    moveDecoratingCamera: s.moveDecoratingCamera,
+    undoStroke: s.undoStroke,
+    redoStroke: s.redoStroke,
+    canUndo: s.canUndo,
+    canRedo: s.canRedo,
+    generateSectionsUpToDepth: s.generateSectionsUpToDepth,
+    maxGeneratedSectionDepth: s.maxGeneratedSectionDepth,
+    copySelectedItems: s.copySelectedItems,
+    pasteItems: s.pasteItems,
+    setDecoratingBrushSettings: s.setDecoratingBrushSettings,
+  })));
 
   const [currentTool, setCurrentTool] = useState<CanvasTool>('draw');
   const [brushColor, setBrushColor] = useState('#ff0000');
