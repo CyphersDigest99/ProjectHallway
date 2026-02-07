@@ -690,11 +690,18 @@ const DecoratingDrawingSurface: React.FC<{
     }
   }, [gl]);
 
-  // Attach raw DOM pointermove/pointerup listeners once on mount.
-  // They read from refs so they always see the latest values without
-  // needing to be re-attached (which caused the stylus timing gap).
+  // Attach raw DOM listeners once on mount. They read from refs so they
+  // always see current values without needing re-attachment.
+  // Also disables browser touch gestures (scroll/pan/zoom) on the canvas
+  // while this component is mounted — without this, the browser interprets
+  // stylus/touch input as a pan gesture and fires pointercancel after ~3px
+  // of movement, killing the stroke.
   useEffect(() => {
     const domEl = gl.domElement;
+
+    // Prevent browser from hijacking touch for scroll/pan/zoom gestures
+    const prevTouchAction = domEl.style.touchAction;
+    domEl.style.touchAction = 'none';
 
     const onPointerMove = (e: PointerEvent) => {
       if (!isDrawingRef.current) return;
@@ -749,6 +756,7 @@ const DecoratingDrawingSurface: React.FC<{
       domEl.removeEventListener('pointermove', onPointerMove);
       domEl.removeEventListener('pointerup', onPointerUp);
       domEl.removeEventListener('pointercancel', onPointerUp);
+      domEl.style.touchAction = prevTouchAction;
     };
   }, [gl]);
 
