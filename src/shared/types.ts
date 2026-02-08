@@ -2,7 +2,7 @@ export type ObjectType = 'cube' | 'sphere' | 'cylinder' | 'cone' | 'torus' | 'mo
 
 export type WallSide = 'left' | 'right' | 'floor' | 'ceiling';
 
-export type NavigationMode = 'normal' | 'sightseeing' | 'canvas' | 'decorating';
+export type NavigationMode = 'normal' | 'canvas' | 'decorating';
 
 export type WallTextureType = 'default' | 'metal' | 'stucco' | 'wood' | 'glass' | 'brick' | 'concrete';
 

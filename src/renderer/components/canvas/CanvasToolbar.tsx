@@ -208,7 +208,7 @@ export const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
       <div className="canvas-toolbar-spacer" />
 
       <button className="canvas-toolbar-btn exit-btn" onClick={onExit}>
-        <span className="btn-label">Exit Canvas Mode</span>
+        <span className="btn-label">Exit (Space/ESC)</span>
       </button>
 
       <div className="canvas-toolbar-divider" />

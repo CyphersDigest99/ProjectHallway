@@ -41,11 +41,6 @@ interface DecoratingState {
   cameraOffset: number; // Sideways position along wall
 }
 
-interface SightseeingState {
-  focusPoint: Vector3;
-  wall: WallSide;
-}
-
 interface PendingDateMarker {
   wall: WallSide;
   position: Vector3;
@@ -92,7 +87,6 @@ interface SceneStore {
 
   // Navigation mode
   navigationMode: NavigationMode;
-  sightseeingState: SightseeingState | null;
   canvasModeState: CanvasModeState | null;
   decoratingState: DecoratingState | null;
 
@@ -109,6 +103,9 @@ interface SceneStore {
 
   // Decorating brush settings (shared between DecoratingMode3D and Scene)
   decoratingBrushSettings: DecoratingBrushSettings | null;
+
+  // Hovered wall section (for hover highlight in normal mode)
+  hoveredWallSection: { wall: WallSide; sectionId: string } | null;
 
   // Object actions
   addObject: (type: ObjectType, options?: Partial<SceneObject>) => SceneObject;
@@ -165,8 +162,6 @@ interface SceneStore {
   cancelDateMarkerPlacement: () => void;
 
   // Navigation mode actions
-  enterSightseeingMode: (focusPoint: Vector3, wall: WallSide) => void;
-  exitSightseeingMode: () => void;
   enterCanvasMode: (wall: WallSide, zPosition: number) => void;
   exitCanvasMode: () => void;
   updateCanvasZPosition: (delta: number) => void;
@@ -186,6 +181,12 @@ interface SceneStore {
 
   // Decorating brush settings
   setDecoratingBrushSettings: (settings: DecoratingBrushSettings | null) => void;
+
+  // Wall section interaction
+  setHoveredWallSection: (section: { wall: WallSide; sectionId: string } | null) => void;
+  clearSectionDrawings: (sectionId: string) => void;
+  copySectionDrawings: (sectionId: string) => void;
+  pasteSectionDrawings: (targetSectionId: string, targetWall: WallSide) => void;
 
   // Settings actions
   updateSettings: (updates: Partial<SceneSettings>) => void;
@@ -268,7 +269,6 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
 
   // Navigation mode
   navigationMode: 'normal',
-  sightseeingState: null,
   canvasModeState: null,
   decoratingState: null,
 
@@ -285,6 +285,9 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
 
   // Decorating brush settings
   decoratingBrushSettings: null,
+
+  // Hovered wall section
+  hoveredWallSection: null,
 
   addObject: (type, options = {}) => {
     const newObject: SceneObject = {
@@ -786,20 +789,6 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
   },
 
   // Navigation mode management
-  enterSightseeingMode: (focusPoint, wall) => {
-    set({
-      navigationMode: 'sightseeing',
-      sightseeingState: { focusPoint, wall },
-    });
-  },
-
-  exitSightseeingMode: () => {
-    set({
-      navigationMode: 'normal',
-      sightseeingState: null,
-    });
-  },
-
   enterCanvasMode: (wall, zPosition) => {
     const { getWallSectionAt, generateSectionsUpToDepth } = get();
     generateSectionsUpToDepth(zPosition + 10);
@@ -818,9 +807,8 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
   },
 
   exitCanvasMode: () => {
-    const { sightseeingState } = get();
     set({
-      navigationMode: sightseeingState ? 'sightseeing' : 'normal',
+      navigationMode: 'normal',
       canvasModeState: null,
       selectedCanvasItemId: null,
     });
@@ -862,9 +850,8 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
   },
 
   exitDecoratingMode: () => {
-    const { sightseeingState } = get();
     set({
-      navigationMode: sightseeingState ? 'sightseeing' : 'normal',
+      navigationMode: 'normal',
       decoratingState: null,
       selectedCanvasItemIds: new Set<string>(),
       canvasClipboard: null,
@@ -952,6 +939,42 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
 
   setDecoratingBrushSettings: (settings) => {
     set({ decoratingBrushSettings: settings });
+  },
+
+  setHoveredWallSection: (section) => {
+    set({ hoveredWallSection: section });
+  },
+
+  clearSectionDrawings: (sectionId) => {
+    set((state) => ({
+      canvasItems: state.canvasItems.filter(
+        (item) => !(item.type === 'drawing' && item.sectionId === sectionId)
+      ),
+    }));
+    debouncedSave(get);
+  },
+
+  copySectionDrawings: (sectionId) => {
+    const { canvasItems } = get();
+    const drawings = canvasItems.filter(
+      (item) => item.type === 'drawing' && item.sectionId === sectionId
+    );
+    if (drawings.length > 0) {
+      set({ canvasClipboard: drawings });
+    }
+  },
+
+  pasteSectionDrawings: (targetSectionId, targetWall) => {
+    const { canvasClipboard, addCanvasItem } = get();
+    if (!canvasClipboard || canvasClipboard.length === 0) return;
+
+    canvasClipboard.forEach((item) => {
+      addCanvasItem({
+        ...item,
+        wall: targetWall,
+        sectionId: targetSectionId,
+      } as Omit<AnyCanvasItem, 'id' | 'zIndex'>);
+    });
   },
 
   // Settings management

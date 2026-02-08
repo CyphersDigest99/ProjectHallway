@@ -2,7 +2,7 @@ import React, { Suspense, useRef, useEffect, useState, useMemo, useCallback } fr
 import { Canvas, ThreeEvent, useFrame, useThree } from '@react-three/fiber';
 import { Html } from '@react-three/drei';
 import * as THREE from 'three';
-import { SceneObject, HighwaySign as HighwaySignType, CeilingLight as CeilingLightType, SceneSettings, WallSettings, WallImage, WallSide, NavigationMode, Vector3 as Vec3, CanvasDrawingItem, DrawingStroke, WallSection, DateMarker as DateMarkerType } from '../../shared/types';
+import { SceneObject, HighwaySign as HighwaySignType, CeilingLight as CeilingLightType, SceneSettings, WallSettings, WallImage, WallSide, NavigationMode, CanvasDrawingItem, DrawingStroke, WallSection, DateMarker as DateMarkerType } from '../../shared/types';
 import { useSceneStore } from '../store/sceneStore';
 import { useShallow } from 'zustand/react/shallow';
 import { HighwaySign } from './objects/HighwaySign';
@@ -29,6 +29,7 @@ const SEGMENT_DEPTH = 10; // Larger segments = fewer objects
 const NUM_SEGMENTS = 25; // 250m of tunnel visibility
 const SEGMENT_BUFFER = 3; // Extra buffer before/after camera
 const SCROLL_SPEED = 0.08;
+const SEAM_OVERLAP = 0.01; // Tiny overlap between segments to prevent visible seams
 
 // Fork configuration (unused for now)
 const FORK_POSITIONS = [50, 120, 200];
@@ -179,10 +180,7 @@ const createTunnelSegmentVertices = (): Float32Array => {
     vertices.push(w, y, 0, w, y, -d);
   }
 
-  vertices.push(-w, -h, 0, w, -h, 0);
-  vertices.push(-w, h, 0, w, h, 0);
-  vertices.push(-w, -h, 0, -w, h, 0);
-  vertices.push(w, -h, 0, w, h, 0);
+  // Front-face cross-lines removed to prevent visible seams at segment boundaries
 
   return new Float32Array(vertices);
 };
@@ -215,10 +213,10 @@ const initGeometryCache = () => {
   wireframeGeom.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
 
   geometryCache = {
-    wall: new THREE.PlaneGeometry(SEGMENT_DEPTH, TUNNEL_HEIGHT),
-    floor: new THREE.PlaneGeometry(TUNNEL_WIDTH, SEGMENT_DEPTH),
-    ceiling: new THREE.PlaneGeometry(TUNNEL_WIDTH, SEGMENT_DEPTH),
-    trim: new THREE.PlaneGeometry(0.1, SEGMENT_DEPTH),
+    wall: new THREE.PlaneGeometry(SEGMENT_DEPTH + SEAM_OVERLAP * 2, TUNNEL_HEIGHT),
+    floor: new THREE.PlaneGeometry(TUNNEL_WIDTH, SEGMENT_DEPTH + SEAM_OVERLAP * 2),
+    ceiling: new THREE.PlaneGeometry(TUNNEL_WIDTH, SEGMENT_DEPTH + SEAM_OVERLAP * 2),
+    trim: new THREE.PlaneGeometry(0.1, SEGMENT_DEPTH + SEAM_OVERLAP * 2),
     wireframe: wireframeGeom,
   };
 
@@ -228,6 +226,17 @@ const initGeometryCache = () => {
 const getGeometry = (type: 'wall' | 'floor' | 'ceiling' | 'trim' | 'wireframe') => {
   const cache = initGeometryCache();
   return cache[type];
+};
+
+// Create a PlaneGeometry with optionally flipped U coordinates.
+// Needed for the right wall where the mesh rotation reverses the UV u-direction.
+const createFlippedUPlane = (width: number, height: number): THREE.PlaneGeometry => {
+  const geom = new THREE.PlaneGeometry(width, height);
+  const uvs = geom.attributes.uv as THREE.BufferAttribute;
+  for (let i = 0; i < uvs.count; i++) {
+    uvs.setX(i, 1 - uvs.getX(i));
+  }
+  return geom;
 };
 
 // Canvas dimensions for rendering (same as CanvasMode.tsx)
@@ -455,11 +464,19 @@ const WallDrawing: React.FC<{
     return { position: pos, rotation: rot, planeWidth: pWidth, planeHeight: pHeight };
   }, [section.wall, section.zStart, section.zEnd]);
 
+  // Right wall rotation reverses the UV u-direction, so flip U to compensate
+  const drawingGeometry = useMemo(() => {
+    if (section.wall === 'right') {
+      return createFlippedUPlane(planeWidth, planeHeight);
+    }
+    return new THREE.PlaneGeometry(planeWidth, planeHeight);
+  }, [planeWidth, planeHeight, section.wall]);
+
   if (!textureRef.current) return null;
 
   return (
     <mesh position={position} rotation={rotation} renderOrder={2}>
-      <planeGeometry args={[planeWidth, planeHeight]} />
+      <primitive object={drawingGeometry} attach="geometry" />
       <meshStandardMaterial
         map={textureRef.current}
         transparent
@@ -472,7 +489,9 @@ const WallDrawing: React.FC<{
   );
 });
 
-// Drawing surface for decorating mode - handles mouse input and renders strokes to wall
+// Drawing surface for decorating mode - handles mouse input and renders strokes to wall.
+// Spans up to 3 wall sections (prev + active + next) so drawing works seamlessly
+// across section boundaries. On stroke complete, splits into per-section strokes.
 const DecoratingDrawingSurface: React.FC<{
   wall: WallSide;
   zPosition: number;
@@ -482,6 +501,7 @@ const DecoratingDrawingSurface: React.FC<{
   wallSections: WallSection[];
 }> = ({ wall, zPosition, brushSettings, onStrokeComplete, canvasItems, wallSections }) => {
   const { camera, raycaster, gl } = useThree();
+  const addCanvasItem = useSceneStore(s => s.addCanvasItem);
   const currentStrokeRef = useRef<{ x: number; y: number }[]>([]);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const backgroundCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -499,22 +519,50 @@ const DecoratingDrawingSurface: React.FC<{
   const CANVAS_W = 1600;
   const CANVAS_H = 1000;
 
-  // Find the active section and drawing
-  // Use the camera's zPosition directly — the camera is placed at this depth in decorating mode
-  const activeSection = useMemo(() => {
-    return wallSections.find(s =>
+  // Find active section and its neighbors to span across for seamless drawing
+  const { spanSections, combinedZStart, combinedZEnd } = useMemo(() => {
+    const active = wallSections.find(s =>
       s.wall === wall && zPosition >= s.zStart && zPosition < s.zEnd
     );
+    if (!active) return { spanSections: [] as WallSection[], combinedZStart: 0, combinedZEnd: 0 };
+
+    const prev = wallSections.find(s =>
+      s.wall === wall && s.zEnd === active.zStart
+    );
+    const next = wallSections.find(s =>
+      s.wall === wall && s.zStart === active.zEnd
+    );
+
+    const sections = [prev, active, next].filter(Boolean) as WallSection[];
+    sections.sort((a, b) => a.zStart - b.zStart);
+
+    return {
+      spanSections: sections,
+      combinedZStart: sections[0].zStart,
+      combinedZEnd: sections[sections.length - 1].zEnd,
+    };
   }, [wallSections, wall, zPosition]);
 
-  const activeDrawing = useMemo(() => {
-    if (!activeSection) return null;
-    return canvasItems.find(
-      item => item.sectionId === activeSection.id && item.wall === wall
-    ) as CanvasDrawingItem | undefined;
-  }, [canvasItems, activeSection, wall]);
+  const numSpanSections = spanSections.length;
+  const COMBINED_CANVAS_W = CANVAS_W * numSpanSections;
+  const combinedLength = combinedZEnd - combinedZStart;
 
-  // Create wall plane for raycasting
+  // Find drawings for each spanned section (for rendering existing strokes)
+  const sectionDrawings = useMemo(() => {
+    return spanSections.map(section => {
+      const drawing = canvasItems.find(
+        item => item.sectionId === section.id && item.wall === wall
+      ) as CanvasDrawingItem | undefined;
+      return { section, drawing: drawing ?? null };
+    });
+  }, [canvasItems, spanSections, wall]);
+
+  // Dependency key for canvas re-render: tracks total stroke count across all spanned sections
+  const totalStrokeKey = sectionDrawings.map(
+    sd => `${sd.section.id}:${sd.drawing?.strokes?.length ?? 0}`
+  ).join(',');
+
+  // Create wall plane for raycasting (infinite plane, works across all sections)
   const wallPlane = useMemo(() => {
     const w = TUNNEL_WIDTH / 2;
     const h = TUNNEL_HEIGHT / 2;
@@ -526,17 +574,15 @@ const DecoratingDrawingSurface: React.FC<{
     }
   }, [wall]);
 
-  // Convert 3D world point to 2D canvas coordinates.
-  // Clamps to canvas bounds instead of rejecting out-of-range points,
-  // so drawing works across the full visible area of the wall.
+  // Convert 3D world point to 2D canvas coordinates across the combined section span.
+  // Clamps to combined canvas bounds so drawing works across section boundaries.
   const worldToCanvas = useCallback((worldPoint: THREE.Vector3): { x: number; y: number } | null => {
-    if (!activeSection) return null;
+    if (spanSections.length === 0 || combinedLength === 0) return null;
     const h = TUNNEL_HEIGHT / 2;
     const worldZ = -worldPoint.z;
-    const sectionLen = activeSection.zEnd - activeSection.zStart;
 
-    const zNorm = (worldZ - activeSection.zStart) / sectionLen;
-    const clampedX = Math.max(0, Math.min(CANVAS_W, zNorm * CANVAS_W));
+    const zNorm = (worldZ - combinedZStart) / combinedLength;
+    const clampedX = Math.max(0, Math.min(COMBINED_CANVAS_W, zNorm * COMBINED_CANVAS_W));
 
     switch (wall) {
       case 'left':
@@ -552,33 +598,43 @@ const DecoratingDrawingSurface: React.FC<{
           y: Math.max(0, Math.min(CANVAS_H, ((TUNNEL_WIDTH / 2 - worldPoint.x) / TUNNEL_WIDTH) * CANVAS_H)),
         };
     }
-  }, [activeSection, wall]);
+  }, [spanSections, combinedZStart, combinedLength, COMBINED_CANVAS_W, wall]);
 
-  // Initialize canvases and render committed strokes to background
+  // Initialize canvases and render committed strokes from all spanned sections
   useEffect(() => {
     if (!canvasRef.current) {
       canvasRef.current = document.createElement('canvas');
-      canvasRef.current.width = CANVAS_W;
-      canvasRef.current.height = CANVAS_H;
     }
+    canvasRef.current.width = COMBINED_CANVAS_W;
+    canvasRef.current.height = CANVAS_H;
+
     if (!backgroundCanvasRef.current) {
       backgroundCanvasRef.current = document.createElement('canvas');
-      backgroundCanvasRef.current.width = CANVAS_W;
-      backgroundCanvasRef.current.height = CANVAS_H;
     }
+    backgroundCanvasRef.current.width = COMBINED_CANVAS_W;
+    backgroundCanvasRef.current.height = CANVAS_H;
 
-    // Render all committed strokes onto the background canvas
+    // Render committed strokes from all spanned sections onto the background canvas
     const bgCtx = backgroundCanvasRef.current.getContext('2d')!;
-    bgCtx.clearRect(0, 0, CANVAS_W, CANVAS_H);
-    if (activeDrawing?.strokes) {
-      activeDrawing.strokes.forEach(stroke => {
+    bgCtx.clearRect(0, 0, COMBINED_CANVAS_W, CANVAS_H);
+
+    sectionDrawings.forEach(({ section, drawing }) => {
+      if (!drawing?.strokes || drawing.strokes.length === 0) return;
+      // Each section's strokes use local coords (0 to CANVAS_W).
+      // Offset by the section's position in the combined canvas.
+      const sectionIndex = spanSections.indexOf(section);
+      const xOffset = sectionIndex * CANVAS_W;
+      bgCtx.save();
+      bgCtx.translate(xOffset, 0);
+      drawing.strokes.forEach(stroke => {
         renderStrokeToContext(bgCtx, stroke);
       });
-    }
+      bgCtx.restore();
+    });
 
     // Copy background to foreground (visible texture)
     const ctx = canvasRef.current.getContext('2d')!;
-    ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
+    ctx.clearRect(0, 0, COMBINED_CANVAS_W, CANVAS_H);
     ctx.drawImage(backgroundCanvasRef.current, 0, 0);
 
     if (textureRef.current) {
@@ -587,18 +643,17 @@ const DecoratingDrawingSurface: React.FC<{
       textureRef.current = new THREE.CanvasTexture(canvasRef.current);
       setTextureVersion(v => v + 1);
     }
-  }, [activeDrawing?.strokes?.length, activeDrawing?.id]);
+  }, [totalStrokeKey, COMBINED_CANVAS_W, spanSections]);
 
-  // Calculate mesh position and rotation using actual section bounds
+  // Calculate mesh position and rotation covering all spanned sections
   const { position, rotation, planeWidth, planeHeight } = useMemo(() => {
-    if (!activeSection) {
+    if (spanSections.length === 0) {
       return { position: [0, 0, 0] as [number, number, number], rotation: [0, 0, 0] as [number, number, number], planeWidth: 1, planeHeight: 1 };
     }
 
     const w = TUNNEL_WIDTH / 2;
     const h = TUNNEL_HEIGHT / 2;
-    const sectionMidZ = -(activeSection.zStart + activeSection.zEnd) / 2;
-    const sectionLen = activeSection.zEnd - activeSection.zStart;
+    const midZ = -(combinedZStart + combinedZEnd) / 2;
 
     let pos: [number, number, number];
     let rot: [number, number, number];
@@ -607,33 +662,33 @@ const DecoratingDrawingSurface: React.FC<{
 
     switch (wall) {
       case 'left':
-        pos = [-w + 0.03, 0, sectionMidZ];
+        pos = [-w + 0.03, 0, midZ];
         rot = [0, Math.PI / 2, 0];
-        pWidth = sectionLen;
+        pWidth = combinedLength;
         pHeight = TUNNEL_HEIGHT;
         break;
       case 'right':
-        pos = [w - 0.03, 0, sectionMidZ];
+        pos = [w - 0.03, 0, midZ];
         rot = [0, -Math.PI / 2, 0];
-        pWidth = sectionLen;
+        pWidth = combinedLength;
         pHeight = TUNNEL_HEIGHT;
         break;
       case 'floor':
-        pos = [0, -h + 0.03, sectionMidZ];
+        pos = [0, -h + 0.03, midZ];
         rot = [-Math.PI / 2, 0, 0];
         pWidth = TUNNEL_WIDTH;
-        pHeight = sectionLen;
+        pHeight = combinedLength;
         break;
       case 'ceiling':
-        pos = [0, h - 0.03, sectionMidZ];
+        pos = [0, h - 0.03, midZ];
         rot = [Math.PI / 2, 0, 0];
         pWidth = TUNNEL_WIDTH;
-        pHeight = sectionLen;
+        pHeight = combinedLength;
         break;
     }
 
     return { position: pos, rotation: rot, planeWidth: pWidth, planeHeight: pHeight };
-  }, [activeSection, wall]);
+  }, [spanSections, combinedZStart, combinedZEnd, combinedLength, wall]);
 
   const getCanvasPoint = useCallback((clientX: number, clientY: number): { x: number; y: number } | null => {
     const rect = gl.domElement.getBoundingClientRect();
@@ -654,12 +709,18 @@ const DecoratingDrawingSurface: React.FC<{
 
   // Keep refs in sync so DOM event handlers always read current values.
   // This avoids stale closures — the handlers are attached once and read refs.
-  const activeDrawingRef = useRef(activeDrawing);
-  activeDrawingRef.current = activeDrawing;
   const onStrokeCompleteRef = useRef(onStrokeComplete);
   onStrokeCompleteRef.current = onStrokeComplete;
   const getCanvasPointRef = useRef(getCanvasPoint);
   getCanvasPointRef.current = getCanvasPoint;
+  const spanSectionsRef = useRef(spanSections);
+  spanSectionsRef.current = spanSections;
+  const canvasItemsRef = useRef(canvasItems);
+  canvasItemsRef.current = canvasItems;
+  const addCanvasItemRef = useRef(addCanvasItem);
+  addCanvasItemRef.current = addCanvasItem;
+  const wallRef = useRef(wall);
+  wallRef.current = wall;
 
   const handlePointerDown = useCallback((e: ThreeEvent<PointerEvent>) => {
     const bs = brushSettingsRef.current;
@@ -714,8 +775,9 @@ const DecoratingDrawingSurface: React.FC<{
 
         // Double-buffered render: composite background + current stroke only
         if (canvasRef.current && backgroundCanvasRef.current && textureRef.current) {
+          const cw = canvasRef.current.width;
           const ctx = canvasRef.current.getContext('2d')!;
-          ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
+          ctx.clearRect(0, 0, cw, CANVAS_H);
           ctx.drawImage(backgroundCanvasRef.current, 0, 0);
 
           const tempStroke: DrawingStroke = {
@@ -733,16 +795,101 @@ const DecoratingDrawingSurface: React.FC<{
     const onPointerUp = () => {
       if (!isDrawingRef.current) return;
       const bs = brushSettingsRef.current;
-      const drawing = activeDrawingRef.current;
+      const sections = spanSectionsRef.current;
+      const items = canvasItemsRef.current;
+      const currentWall = wallRef.current;
 
-      if (currentStrokeRef.current.length > 1 && drawing && bs) {
-        const stroke: DrawingStroke = {
-          points: currentStrokeRef.current,
-          color: bs.color,
-          size: bs.size,
-          style: bs.style as DrawingStroke['style'],
-        };
-        onStrokeCompleteRef.current(drawing.id, stroke);
+      if (currentStrokeRef.current.length > 1 && bs && sections.length > 0) {
+        // Split stroke into per-section portions based on canvas x-coordinate.
+        // Each section occupies CANVAS_W pixels in the combined canvas.
+        const sectionWidth = CANVAS_W;
+        const numSections = sections.length;
+
+        // Group consecutive points by which section they fall in.
+        // When crossing a boundary, interpolate a point at the exact edge
+        // so both sections' sub-strokes connect seamlessly.
+        let currentSectionIdx = -1;
+        let currentRun: { x: number; y: number }[] = [];
+        const runs: { sectionIdx: number; points: { x: number; y: number }[] }[] = [];
+        let prevPoint: { x: number; y: number } | null = null;
+
+        for (const point of currentStrokeRef.current) {
+          const sectionIdx = Math.min(
+            Math.max(0, Math.floor(point.x / sectionWidth)),
+            numSections - 1
+          );
+
+          if (sectionIdx !== currentSectionIdx) {
+            // Interpolate a boundary point when crossing between sections
+            if (currentSectionIdx >= 0 && prevPoint) {
+              const boundary = sectionIdx > currentSectionIdx
+                ? sectionIdx * sectionWidth        // crossing deeper
+                : currentSectionIdx * sectionWidth; // crossing shallower
+              const dx = point.x - prevPoint.x;
+              const t = dx !== 0 ? (boundary - prevPoint.x) / dx : 0;
+              const boundaryY = prevPoint.y + t * (point.y - prevPoint.y);
+
+              // Close outgoing run with boundary point (at section edge)
+              currentRun.push({
+                x: boundary - currentSectionIdx * sectionWidth,
+                y: boundaryY,
+              });
+              runs.push({ sectionIdx: currentSectionIdx, points: currentRun });
+
+              // Start incoming run with boundary point (at section edge)
+              currentRun = [{
+                x: boundary - sectionIdx * sectionWidth,
+                y: boundaryY,
+              }];
+            } else if (currentRun.length > 0 && currentSectionIdx >= 0) {
+              runs.push({ sectionIdx: currentSectionIdx, points: currentRun });
+              currentRun = [];
+            }
+            currentSectionIdx = sectionIdx;
+          }
+
+          // Convert to section-local coordinates
+          currentRun.push({
+            x: point.x - sectionIdx * sectionWidth,
+            y: point.y,
+          });
+          prevPoint = point;
+        }
+        if (currentRun.length > 0 && currentSectionIdx >= 0) {
+          runs.push({ sectionIdx: currentSectionIdx, points: currentRun });
+        }
+
+        // Save each run to its section's drawing
+        for (const run of runs) {
+          if (run.points.length < 2) continue;
+          const section = sections[run.sectionIdx];
+          if (!section) continue;
+
+          // Find or create drawing for this section
+          let drawing = items.find(
+            item => item.type === 'drawing' && item.sectionId === section.id && item.wall === currentWall
+          ) as CanvasDrawingItem | undefined;
+
+          if (!drawing) {
+            const newItem = addCanvasItemRef.current({
+              type: 'drawing',
+              wall: currentWall,
+              sectionId: section.id,
+              position: { x: 0, y: 0 },
+              size: { width: CANVAS_W, height: CANVAS_H },
+              strokes: [],
+            } as Omit<CanvasDrawingItem, 'id' | 'zIndex'>);
+            drawing = newItem as CanvasDrawingItem;
+          }
+
+          const sectionStroke: DrawingStroke = {
+            points: run.points,
+            color: bs.color,
+            size: bs.size,
+            style: bs.style as DrawingStroke['style'],
+          };
+          onStrokeCompleteRef.current(drawing.id, sectionStroke);
+        }
       }
       isDrawingRef.current = false;
       currentStrokeRef.current = [];
@@ -760,7 +907,15 @@ const DecoratingDrawingSurface: React.FC<{
     };
   }, [gl]);
 
-  if (!activeSection || !textureRef.current) return null;
+  // Right wall rotation reverses the UV u-direction, so flip U to compensate
+  const drawingGeometry = useMemo(() => {
+    if (wall === 'right') {
+      return createFlippedUPlane(planeWidth, planeHeight);
+    }
+    return new THREE.PlaneGeometry(planeWidth, planeHeight);
+  }, [planeWidth, planeHeight, wall]);
+
+  if (spanSections.length === 0 || !textureRef.current) return null;
 
   return (
     <mesh
@@ -769,7 +924,7 @@ const DecoratingDrawingSurface: React.FC<{
       onPointerDown={handlePointerDown}
       renderOrder={10}
     >
-      <planeGeometry args={[planeWidth, planeHeight]} />
+      <primitive object={drawingGeometry} attach="geometry" />
       <meshStandardMaterial
         map={textureRef.current}
         transparent
@@ -790,7 +945,9 @@ const TunnelSegment: React.FC<{
   wallSettings: SceneSettings['walls'];
   wallSections: WallSection[];
   segmentZ: number; // The z-position of this segment's front face
-}> = React.memo(({ onWallClick, wallSettings, wallSections, segmentZ }) => {
+  onWallHover?: (hover: { wall: WallSide; sectionId: string } | null) => void;
+  hoveredSectionId?: string | null;
+}> = React.memo(({ onWallClick, wallSettings, wallSections, segmentZ, onWallHover, hoveredSectionId }) => {
   // Use cached textures
   const wallTexture = useMemo(() => getWallTexture(), []);
   const floorTexture = useMemo(() => getFloorTexture(), []);
@@ -827,6 +984,26 @@ const TunnelSegment: React.FC<{
     }
   }, [onWallClick]);
 
+  // Hover handler for left/right walls
+  const handleWallPointerMove = useCallback((wall: WallSide) => (e: ThreeEvent<PointerEvent>) => {
+    if (!onWallHover) return;
+    const section = getWallSectionForWall(wall);
+    if (section) {
+      e.stopPropagation();
+      onWallHover({ wall, sectionId: section.id });
+    }
+  }, [onWallHover, getWallSectionForWall]);
+
+  const handleWallPointerOut = useCallback(() => {
+    onWallHover?.(null);
+  }, [onWallHover]);
+
+  // Check if left/right wall sections are hovered
+  const leftSection = getWallSectionForWall('left');
+  const rightSection = getWallSectionForWall('right');
+  const leftHovered = hoveredSectionId != null && leftSection?.id === hoveredSectionId;
+  const rightHovered = hoveredSectionId != null && rightSection?.id === hoveredSectionId;
+
   // Get adjusted color with brightness
   const getWallColor = useCallback((settings: WallSettings) => {
     return adjustBrightness(settings.color, settings.brightness);
@@ -857,6 +1034,8 @@ const TunnelSegment: React.FC<{
         rotation={[0, Math.PI / 2, 0]}
         onClick={handleWallClick('left')}
         onContextMenu={handleWallClick('left')}
+        onPointerMove={handleWallPointerMove('left')}
+        onPointerOut={handleWallPointerOut}
         renderOrder={0}
       >
         <primitive object={getGeometry('wall')} attach="geometry" />
@@ -870,6 +1049,23 @@ const TunnelSegment: React.FC<{
           opacity={leftSettings.opacity}
         />
       </mesh>
+      {/* Left wall hover highlight */}
+      {leftHovered && (
+        <mesh
+          position={[-w + 0.03, 0, -d / 2]}
+          rotation={[0, Math.PI / 2, 0]}
+          renderOrder={2}
+        >
+          <primitive object={getGeometry('wall')} attach="geometry" />
+          <meshBasicMaterial
+            color="#4ecdc4"
+            transparent
+            opacity={0.07}
+            depthWrite={false}
+            side={THREE.FrontSide}
+          />
+        </mesh>
+      )}
 
       {/* Right wall */}
       <mesh
@@ -877,6 +1073,8 @@ const TunnelSegment: React.FC<{
         rotation={[0, -Math.PI / 2, 0]}
         onClick={handleWallClick('right')}
         onContextMenu={handleWallClick('right')}
+        onPointerMove={handleWallPointerMove('right')}
+        onPointerOut={handleWallPointerOut}
         renderOrder={0}
       >
         <primitive object={getGeometry('wall')} attach="geometry" />
@@ -890,6 +1088,23 @@ const TunnelSegment: React.FC<{
           opacity={rightSettings.opacity}
         />
       </mesh>
+      {/* Right wall hover highlight */}
+      {rightHovered && (
+        <mesh
+          position={[w - 0.03, 0, -d / 2]}
+          rotation={[0, -Math.PI / 2, 0]}
+          renderOrder={2}
+        >
+          <primitive object={getGeometry('wall')} attach="geometry" />
+          <meshBasicMaterial
+            color="#4ecdc4"
+            transparent
+            opacity={0.07}
+            depthWrite={false}
+            side={THREE.FrontSide}
+          />
+        </mesh>
+      )}
 
       {/* Floor */}
       <mesh
@@ -946,52 +1161,45 @@ const TunnelSegment: React.FC<{
 // Camera controller with multiple navigation modes
 const CameraController: React.FC<{
   scrollZ: number;
-  mouseOffset: { x: number; y: number };
-  isLooking: boolean;
-  lastLookTime: number;
+  lookRotation: { yaw: number; pitch: number };
+  fov: number;
   navigationMode: NavigationMode;
-  sightseeingFocusPoint: Vec3 | null;
-  sightseeingWall: WallSide | null;
   decoratingState: { wall: WallSide; zPosition: number; cameraOffset: number } | null;
-}> = ({ scrollZ, mouseOffset, isLooking, lastLookTime, navigationMode, sightseeingFocusPoint, sightseeingWall, decoratingState }) => {
+}> = ({ scrollZ, lookRotation, fov, navigationMode, decoratingState }) => {
   const { camera } = useThree();
-  const targetRotation = useRef({ x: 0, y: 0 });
-  const currentRotation = useRef({ x: 0, y: 0 });
+  const currentRotation = useRef({ yaw: 0, pitch: 0 });
   const currentPosition = useRef({ x: 0, y: 0, z: 0 });
   const currentLookAt = useRef({ x: 0, y: 0, z: -10 });
+  const currentFov = useRef(75);
 
   useFrame(() => {
     const lerpFactor = 0.08;
 
     if (navigationMode === 'normal') {
+      // Lerp FOV
+      const fovDelta = fov - currentFov.current;
+      if (Math.abs(fovDelta) > 0.01) {
+        currentFov.current += fovDelta * 0.1;
+        (camera as THREE.PerspectiveCamera).fov = currentFov.current;
+        (camera as THREE.PerspectiveCamera).updateProjectionMatrix();
+      }
+
+      // Lerp rotation toward target
+      currentRotation.current.yaw += (lookRotation.yaw - currentRotation.current.yaw) * 0.1;
+      currentRotation.current.pitch += (lookRotation.pitch - currentRotation.current.pitch) * 0.1;
+
       // Normal mode: Standard tunnel navigation
       const targetZ = -scrollZ;
       currentPosition.current.z += (targetZ - currentPosition.current.z) * lerpFactor;
       currentPosition.current.y += (0 - currentPosition.current.y) * lerpFactor;
       currentPosition.current.x += (0 - currentPosition.current.x) * lerpFactor;
 
-      // FPS look around with right mouse hold
-      if (isLooking) {
-        targetRotation.current.x = mouseOffset.y * 0.3;
-        targetRotation.current.y = mouseOffset.x * 0.5;
-      } else {
-        // Gradually return to forward after releasing right mouse
-        const timeSinceLook = Date.now() - lastLookTime;
-        if (timeSinceLook > 1500) {
-          targetRotation.current.x = 0;
-          targetRotation.current.y = 0;
-        }
-      }
-
-      currentRotation.current.x += (targetRotation.current.x - currentRotation.current.x) * 0.05;
-      currentRotation.current.y += (targetRotation.current.y - currentRotation.current.y) * 0.05;
-
       // Calculate lookAt based on TARGET position, not current position
       // This prevents the lookAt from lagging behind during fast scrolling
       // which would cause a 180-degree flip when lookAt ends up behind the camera
       const lookAtZ = targetZ - 10;
-      const lookAtX = Math.sin(currentRotation.current.y) * 10;
-      const lookAtY = Math.sin(currentRotation.current.x) * 5;
+      const lookAtX = Math.sin(currentRotation.current.yaw) * 10;
+      const lookAtY = Math.sin(currentRotation.current.pitch) * 5;
 
       currentLookAt.current.x += (lookAtX - currentLookAt.current.x) * lerpFactor;
       currentLookAt.current.y += (lookAtY - currentLookAt.current.y) * lerpFactor;
@@ -1010,11 +1218,11 @@ const CameraController: React.FC<{
 
       switch (decoratingState.wall) {
         case 'left':
-          targetX = -w + 4; // 4m from left wall
+          targetX = -w + 4;
           lookAtX = -w;
           break;
         case 'right':
-          targetX = w - 4; // 4m from right wall
+          targetX = w - 4;
           lookAtX = w;
           break;
         case 'floor':
@@ -1035,52 +1243,8 @@ const CameraController: React.FC<{
       currentLookAt.current.y += (lookAtY - currentLookAt.current.y) * lerpFactor;
       currentLookAt.current.z += (targetZ - currentLookAt.current.z) * lerpFactor;
 
-    } else if (navigationMode === 'sightseeing' && sightseeingFocusPoint && sightseeingWall) {
-      // Sightseeing mode: Camera focuses on click point, POV follows cursor
-      const focusZ = sightseeingFocusPoint.z;
-
-      // Position camera based on which wall we're looking at
-      let targetX = 0;
-      let targetY = 0;
-      const targetZ = focusZ + 3; // Slightly behind the focus point
-
-      switch (sightseeingWall) {
-        case 'left':
-          targetX = 2; // Move right to see left wall
-          break;
-        case 'right':
-          targetX = -2; // Move left to see right wall
-          break;
-        case 'floor':
-          targetY = 2; // Move up to see floor
-          break;
-        case 'ceiling':
-          targetY = -2; // Move down to see ceiling
-          break;
-      }
-
-      currentPosition.current.x += (targetX - currentPosition.current.x) * lerpFactor;
-      currentPosition.current.y += (targetY - currentPosition.current.y) * lerpFactor;
-      currentPosition.current.z += (targetZ - currentPosition.current.z) * lerpFactor;
-
-      // In sightseeing mode, mouse position controls look direction (no click required)
-      // mouseOffset is normalized to -1 to 1
-      // Higher multipliers allow looking behind and at opposing wall
-      const lookOffsetX = mouseOffset.x * 10;
-      const lookOffsetY = -mouseOffset.y * 8;
-
-      const baseLookAtX = sightseeingFocusPoint.x + lookOffsetX;
-      const baseLookAtY = sightseeingFocusPoint.y + lookOffsetY;
-      const baseLookAtZ = focusZ;
-
-      currentLookAt.current.x += (baseLookAtX - currentLookAt.current.x) * 0.1;
-      currentLookAt.current.y += (baseLookAtY - currentLookAt.current.y) * 0.1;
-      currentLookAt.current.z += (baseLookAtZ - currentLookAt.current.z) * 0.1;
-
     } else if (navigationMode === 'canvas') {
       // Canvas mode: Camera handled separately or frozen
-      // The camera should be looking straight at the wall
-      // This mode primarily uses the 2D overlay
     }
 
     // Apply camera position and look-at
@@ -1105,7 +1269,9 @@ const InfiniteTunnel: React.FC<{
   onWallClick?: (position: { x: number; y: number; z: number }, event: ThreeEvent<MouseEvent>, wall: WallSide) => void;
   wallSettings: SceneSettings['walls'];
   wallSections: WallSection[];
-}> = ({ cameraZ, onWallClick, wallSettings, wallSections }) => {
+  onWallHover?: (hover: { wall: WallSide; sectionId: string } | null) => void;
+  hoveredSectionId?: string | null;
+}> = ({ cameraZ, onWallClick, wallSettings, wallSections, onWallHover, hoveredSectionId }) => {
   const segmentsRef = useRef<THREE.Group>(null);
 
   // Discrete base position — only changes when crossing a SEGMENT_DEPTH boundary.
@@ -1141,6 +1307,8 @@ const InfiniteTunnel: React.FC<{
             wallSettings={wallSettings}
             wallSections={wallSections}
             segmentZ={pos}
+            onWallHover={onWallHover}
+            hoveredSectionId={hoveredSectionId}
           />
         </group>
       ))}
@@ -1693,6 +1861,11 @@ const PendingWallpaperPreview: React.FC<{
 };
 
 // Fixed placed wall image component
+const FRAME_BORDER = 0.15; // Frame border width in meters
+const FRAME_DEPTH = 0.24; // How far the frame protrudes from the wall
+const FRAME_COLOR = '#1a1a1a'; // Dark frame color
+const FRAME_INNER_COLOR = '#0d0d0d'; // Inner lip / mat color
+
 const PlacedWallImage: React.FC<{
   wallImage: WallImage;
 }> = ({ wallImage }) => {
@@ -1742,48 +1915,65 @@ const PlacedWallImage: React.FC<{
   }
 
   const baseZ = -wallImage.zPosition; // Convert stored positive depth to negative Z
+  // Protrude from wall: offset is wall-normal direction
+  const protrusion = FRAME_DEPTH / 2 + 0.02; // half-depth + small gap from wall
   let position: [number, number, number];
   let rotation: [number, number, number];
 
   switch (wall) {
     case 'left':
-      position = [-w + 0.1, 0, baseZ];
+      position = [-w + protrusion, 0, baseZ];
       rotation = [0, Math.PI / 2, 0];
       break;
     case 'right':
-      position = [w - 0.1, 0, baseZ];
+      position = [w - protrusion, 0, baseZ];
       rotation = [0, -Math.PI / 2, 0];
       break;
     case 'floor':
-      position = [0, -h + 0.1, baseZ];
+      position = [0, -h + protrusion, baseZ];
       rotation = [-Math.PI / 2, 0, 0];
       break;
     case 'ceiling':
-      position = [0, h - 0.1, baseZ];
+      position = [0, h - protrusion, baseZ];
       rotation = [Math.PI / 2, 0, 0];
       break;
   }
 
+  const outerW = displayWidth + FRAME_BORDER * 2;
+  const outerH = displayHeight + FRAME_BORDER * 2;
+
   return (
-    <mesh position={position} rotation={rotation}>
-      <planeGeometry args={[displayWidth, displayHeight]} />
-      <meshStandardMaterial map={texture} side={THREE.DoubleSide} roughness={0.8} metalness={0.1} />
-    </mesh>
+    <group position={position} rotation={rotation}>
+      {/* Frame body — a box behind the image */}
+      <mesh position={[0, 0, -FRAME_DEPTH / 2]}>
+        <boxGeometry args={[outerW, outerH, FRAME_DEPTH]} />
+        <meshStandardMaterial color={FRAME_COLOR} roughness={0.4} metalness={0.3} />
+      </mesh>
+
+      {/* Inner mat / recess — slightly recessed dark plane behind the image */}
+      <mesh position={[0, 0, -0.005]}>
+        <planeGeometry args={[displayWidth + 0.04, displayHeight + 0.04]} />
+        <meshStandardMaterial color={FRAME_INNER_COLOR} roughness={0.9} metalness={0.0} />
+      </mesh>
+
+      {/* Image surface — sits flush on front of frame */}
+      <mesh position={[0, 0, 0.001]}>
+        <planeGeometry args={[displayWidth, displayHeight]} />
+        <meshStandardMaterial map={texture} roughness={0.8} metalness={0.1} />
+      </mesh>
+    </group>
   );
 };
 
 // Scene content
 const SceneContent: React.FC<SceneProps & {
   scrollZ: number;
-  mouseOffset: { x: number; y: number };
-  isLooking: boolean;
-  lastLookTime: number;
+  lookRotation: { yaw: number; pitch: number };
+  fov: number;
   navigationMode: NavigationMode;
-  sightseeingFocusPoint: Vec3 | null;
-  sightseeingWall: WallSide | null;
   decoratingState: { wall: WallSide; zPosition: number; cameraOffset: number } | null;
-}> = ({ onContextMenu, onSignContextMenu, onLightContextMenu, onDateMarkerContextMenu, onHover, onWallClick, onConfirmWallpaper, onCancelWallpaper, scrollZ, mouseOffset, isLooking, lastLookTime, navigationMode, sightseeingFocusPoint, sightseeingWall, decoratingState }) => {
-  const { objects, signs, lights, wallImages, wallSections, canvasItems, dateMarkers, pendingWallpaper, settings, generateSignsUpToDepth, generateLightsUpToDepth, generateSectionsUpToDepth, decoratingBrushSettings, addStrokeToDrawing } = useSceneStore(useShallow(s => ({
+}> = ({ onContextMenu, onSignContextMenu, onLightContextMenu, onDateMarkerContextMenu, onHover, onWallClick, onConfirmWallpaper, onCancelWallpaper, scrollZ, lookRotation, fov, navigationMode, decoratingState }) => {
+  const { objects, signs, lights, wallImages, wallSections, canvasItems, dateMarkers, pendingWallpaper, settings, generateSignsUpToDepth, generateLightsUpToDepth, generateSectionsUpToDepth, decoratingBrushSettings, addStrokeToDrawing, hoveredWallSection, setHoveredWallSection } = useSceneStore(useShallow(s => ({
     objects: s.objects,
     signs: s.signs,
     lights: s.lights,
@@ -1798,6 +1988,8 @@ const SceneContent: React.FC<SceneProps & {
     generateSectionsUpToDepth: s.generateSectionsUpToDepth,
     decoratingBrushSettings: s.decoratingBrushSettings,
     addStrokeToDrawing: s.addStrokeToDrawing,
+    hoveredWallSection: s.hoveredWallSection,
+    setHoveredWallSection: s.setHoveredWallSection,
   })));
 
   // Get drawings that have strokes
@@ -1839,16 +2031,20 @@ const SceneContent: React.FC<SceneProps & {
 
       <CameraController
         scrollZ={scrollZ}
-        mouseOffset={mouseOffset}
-        isLooking={isLooking}
-        lastLookTime={lastLookTime}
+        lookRotation={lookRotation}
+        fov={fov}
         navigationMode={navigationMode}
-        sightseeingFocusPoint={sightseeingFocusPoint}
-        sightseeingWall={sightseeingWall}
         decoratingState={decoratingState}
       />
 
-      <InfiniteTunnel cameraZ={scrollZ} onWallClick={onWallClick} wallSettings={settings.walls} wallSections={wallSections} />
+      <InfiniteTunnel
+        cameraZ={scrollZ}
+        onWallClick={onWallClick}
+        wallSettings={settings.walls}
+        wallSections={wallSections}
+        onWallHover={navigationMode === 'normal' ? setHoveredWallSection : undefined}
+        hoveredSectionId={navigationMode === 'normal' ? hoveredWallSection?.sectionId : null}
+      />
 
       {/* Pending wallpaper preview */}
       {pendingWallpaper && onConfirmWallpaper && onCancelWallpaper && (
@@ -1953,106 +2149,84 @@ const SceneContent: React.FC<SceneProps & {
 
 export const Scene: React.FC<SceneProps> = (props) => {
   const [scrollZ, setScrollZ] = useState(0);
-  const [mouseOffset, setMouseOffset] = useState({ x: 0, y: 0 });
-  const [isLooking, setIsLooking] = useState(false);
-  const [lastLookTime, setLastLookTime] = useState(0);
-  const [lastFloorClickTime, setLastFloorClickTime] = useState(0);
+  const [lookRotation, setLookRotation] = useState({ yaw: 0, pitch: 0 });
+  const [fov, setFov] = useState(75);
+  const isLookingRef = useRef(false);
+  const heldKeysRef = useRef<Set<string>>(new Set());
+  const animFrameRef = useRef<number | null>(null);
+  const lastTimeRef = useRef<number>(0);
+  const lookResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const { settings, navigationMode, sightseeingState, decoratingState, exitSightseeingMode, exitDecoratingMode } = useSceneStore(useShallow(s => ({
+  const { settings, navigationMode, decoratingState, exitDecoratingMode, hoveredWallSection } = useSceneStore(useShallow(s => ({
     settings: s.settings,
     navigationMode: s.navigationMode,
-    sightseeingState: s.sightseeingState,
     decoratingState: s.decoratingState,
-    exitSightseeingMode: s.exitSightseeingMode,
     exitDecoratingMode: s.exitDecoratingMode,
+    hoveredWallSection: s.hoveredWallSection,
   })));
 
-  // Get sightseeing state
-  const sightseeingFocusPoint = sightseeingState?.focusPoint || null;
-  const sightseeingWall = sightseeingState?.wall || null;
-
-  // Handle wall clicks with double-click detection for floor in sightseeing mode
-  const handleWallClickWithDoubleClick = useCallback((
+  // Simple passthrough for wall clicks (no sightseeing logic)
+  const handleWallClick = useCallback((
     position: { x: number; y: number; z: number },
     event: ThreeEvent<MouseEvent>,
     wall: WallSide
   ) => {
-    // In sightseeing mode, detect double-click on floor to exit
-    if (navigationMode === 'sightseeing' && wall === 'floor') {
-      const now = Date.now();
-      if (now - lastFloorClickTime < 300) {
-        // Double-click detected - exit sightseeing mode
-        exitSightseeingMode();
-        setLastFloorClickTime(0);
-        return;
-      }
-      setLastFloorClickTime(now);
-    }
-
-    // Pass through to original handler
     props.onWallClick?.(position, event, wall);
-  }, [navigationMode, lastFloorClickTime, exitSightseeingMode, props.onWallClick]);
+  }, [props.onWallClick]);
 
-  // Scroll navigation with configurable speed - disabled in sightseeing mode
+  // Scroll navigation with Ctrl+scroll for FOV zoom
   useEffect(() => {
     const handleWheel = (e: WheelEvent) => {
       e.preventDefault();
 
-      // In sightseeing mode, detect 2-finger swipe to exit
-      if (navigationMode === 'sightseeing') {
-        // Two-finger swipe is typically detected by ctrlKey on wheel events (pinch)
-        // or large deltaX values (horizontal swipe)
-        const isTwoFingerSwipe = e.ctrlKey || Math.abs(e.deltaX) > 30;
-        if (isTwoFingerSwipe) {
-          exitSightseeingMode();
-          return;
-        }
-        // Also allow ESC-like behavior with aggressive scroll
-        if (Math.abs(e.deltaY) > 100) {
-          exitSightseeingMode();
-          return;
-        }
-        // Otherwise ignore scroll in sightseeing mode
-        return;
-      }
-
-      // Normal mode scrolling
       if (navigationMode === 'normal') {
-        setScrollZ((prev) => Math.max(0, prev + e.deltaY * settings.navigationSpeed));
+        if (e.ctrlKey || e.metaKey) {
+          // Ctrl+scroll: adjust FOV
+          setFov((prev) => Math.max(30, Math.min(110, prev + e.deltaY * 0.05)));
+        } else {
+          // Normal scroll: move forward/backward
+          setScrollZ((prev) => Math.max(0, prev + e.deltaY * settings.navigationSpeed));
+        }
       }
     };
 
     window.addEventListener('wheel', handleWheel, { passive: false });
     return () => window.removeEventListener('wheel', handleWheel);
-  }, [settings.navigationSpeed, navigationMode, exitSightseeingMode]);
+  }, [settings.navigationSpeed, navigationMode]);
 
-  // Mouse look (hold right mouse button to look around in normal mode)
+  // Delta-based mouse look (right-click drag)
   useEffect(() => {
     const handleMouseDown = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
       if (e.button === 2 && !target?.closest?.('.context-menu')) {
-        // Only enable look mode in normal mode and if clicking on canvas
         if (target.tagName === 'CANVAS' && navigationMode === 'normal') {
-          setIsLooking(true);
+          isLookingRef.current = true;
+          // Cancel any pending reset
+          if (lookResetTimerRef.current) {
+            clearTimeout(lookResetTimerRef.current);
+            lookResetTimerRef.current = null;
+          }
         }
       }
     };
 
     const handleMouseUp = (e: MouseEvent) => {
-      if (e.button === 2 && navigationMode === 'normal') {
-        setIsLooking(false);
-        setLastLookTime(Date.now());
+      if (e.button === 2 && isLookingRef.current) {
+        isLookingRef.current = false;
+        // Schedule smooth return to center after 200ms
+        lookResetTimerRef.current = setTimeout(() => {
+          setLookRotation({ yaw: 0, pitch: 0 });
+          lookResetTimerRef.current = null;
+        }, 200);
       }
     };
 
     const handleMouseMove = (e: MouseEvent) => {
-      if (containerRef.current) {
-        const rect = containerRef.current.getBoundingClientRect();
-        const centerX = rect.width / 2;
-        const centerY = rect.height / 2;
-        const offsetX = (e.clientX - rect.left - centerX) / centerX;
-        const offsetY = (e.clientY - rect.top - centerY) / centerY;
-        setMouseOffset({ x: offsetX, y: offsetY });
+      if (isLookingRef.current) {
+        setLookRotation((prev) => ({
+          yaw: Math.max(-1.25, Math.min(1.25, prev.yaw + e.movementX * 0.003)),
+          pitch: Math.max(-0.4, Math.min(0.4, prev.pitch - e.movementY * 0.002)),
+        }));
       }
     };
 
@@ -2064,24 +2238,125 @@ export const Scene: React.FC<SceneProps> = (props) => {
       window.removeEventListener('mousedown', handleMouseDown);
       window.removeEventListener('mouseup', handleMouseUp);
       window.removeEventListener('mousemove', handleMouseMove);
+      if (lookResetTimerRef.current) {
+        clearTimeout(lookResetTimerRef.current);
+      }
     };
   }, [navigationMode]);
 
-  // ESC key to exit sightseeing or decorating mode
+  // WASD navigation + spacebar exit decorating + ESC exit
   useEffect(() => {
+    const isInputElement = (target: EventTarget | null): boolean => {
+      if (!target || !(target instanceof HTMLElement)) return false;
+      const tag = target.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || target.hasAttribute('contenteditable');
+    };
+
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        if (navigationMode === 'sightseeing') {
-          exitSightseeingMode();
-        } else if (navigationMode === 'decorating') {
-          exitDecoratingMode();
+      if (isInputElement(e.target)) return;
+
+      // ESC to exit decorating mode
+      if (e.key === 'Escape' && navigationMode === 'decorating') {
+        exitDecoratingMode();
+        return;
+      }
+
+      // Spacebar to exit decorating mode
+      if (e.key === ' ' && navigationMode === 'decorating') {
+        e.preventDefault();
+        exitDecoratingMode();
+        return;
+      }
+
+      // WASD only in normal mode
+      if (navigationMode === 'normal') {
+        const key = e.key.toLowerCase();
+        if (['w', 'a', 's', 'd'].includes(key)) {
+          heldKeysRef.current.add(key);
         }
       }
     };
 
+    const handleKeyUp = (e: KeyboardEvent) => {
+      const key = e.key.toLowerCase();
+      heldKeysRef.current.delete(key);
+
+      // When A or D released (and not right-click looking), schedule yaw reset
+      if ((key === 'a' || key === 'd') && !isLookingRef.current && navigationMode === 'normal') {
+        if (lookResetTimerRef.current) {
+          clearTimeout(lookResetTimerRef.current);
+        }
+        lookResetTimerRef.current = setTimeout(() => {
+          setLookRotation((prev) => ({ ...prev, yaw: 0 }));
+          lookResetTimerRef.current = null;
+        }, 200);
+      }
+    };
+
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [navigationMode, exitSightseeingMode, exitDecoratingMode]);
+    window.addEventListener('keyup', handleKeyUp);
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, [navigationMode, exitDecoratingMode]);
+
+  // WASD animation loop
+  useEffect(() => {
+    if (navigationMode !== 'normal') {
+      // Clear held keys when leaving normal mode
+      heldKeysRef.current.clear();
+      if (animFrameRef.current) {
+        cancelAnimationFrame(animFrameRef.current);
+        animFrameRef.current = null;
+      }
+      return;
+    }
+
+    const tick = (timestamp: number) => {
+      if (lastTimeRef.current === 0) {
+        lastTimeRef.current = timestamp;
+      }
+      const dt = Math.min((timestamp - lastTimeRef.current) / 1000, 0.05); // cap at 50ms
+      lastTimeRef.current = timestamp;
+
+      const keys = heldKeysRef.current;
+      if (keys.size > 0) {
+        const speed = settings.navigationSpeed / 0.08; // normalize so default speed ≈ 1x
+        if (keys.has('w')) {
+          setScrollZ((prev) => prev + 30 * dt * speed);
+        }
+        if (keys.has('s')) {
+          setScrollZ((prev) => Math.max(0, prev - 30 * dt * speed));
+        }
+        if (keys.has('a')) {
+          setLookRotation((prev) => ({
+            ...prev,
+            yaw: Math.max(-1.25, prev.yaw - 1.2 * dt),
+          }));
+        }
+        if (keys.has('d')) {
+          setLookRotation((prev) => ({
+            ...prev,
+            yaw: Math.min(1.25, prev.yaw + 1.2 * dt),
+          }));
+        }
+      }
+
+      animFrameRef.current = requestAnimationFrame(tick);
+    };
+
+    lastTimeRef.current = 0;
+    animFrameRef.current = requestAnimationFrame(tick);
+
+    return () => {
+      if (animFrameRef.current) {
+        cancelAnimationFrame(animFrameRef.current);
+        animFrameRef.current = null;
+      }
+    };
+  }, [navigationMode, settings.navigationSpeed]);
 
   // Notify parent of scroll changes
   useEffect(() => {
@@ -2102,19 +2377,17 @@ export const Scene: React.FC<SceneProps> = (props) => {
   // Get mode hint text
   const getModeHint = () => {
     switch (navigationMode) {
-      case 'sightseeing':
-        return 'Move mouse to look around • Double-click floor or ESC to exit';
       case 'canvas':
         return 'Canvas mode active';
       case 'decorating':
-        return 'Decorating mode • ESC to exit';
+        return 'Decorating mode \u00b7 Space or ESC to exit';
       default:
-        return isLooking ? 'Looking around...' : 'Scroll to navigate • Hold right-click to look • Click wall to explore';
+        return 'WASD to move \u00b7 Right-drag to look \u00b7 Ctrl+scroll to zoom \u00b7 Click wall to interact';
     }
   };
 
   return (
-    <div className="canvas-container" ref={containerRef}>
+    <div className="canvas-container" ref={containerRef} style={hoveredWallSection && navigationMode === 'normal' ? { cursor: 'pointer' } : undefined}>
       <Canvas
         camera={{
           position: [0, 0, 0],
@@ -2135,14 +2408,11 @@ export const Scene: React.FC<SceneProps> = (props) => {
       >
         <SceneContent
           {...props}
-          onWallClick={handleWallClickWithDoubleClick}
+          onWallClick={handleWallClick}
           scrollZ={scrollZ}
-          mouseOffset={mouseOffset}
-          isLooking={isLooking}
-          lastLookTime={lastLookTime}
+          lookRotation={lookRotation}
+          fov={fov}
           navigationMode={navigationMode}
-          sightseeingFocusPoint={sightseeingFocusPoint}
-          sightseeingWall={sightseeingWall}
           decoratingState={decoratingState}
         />
       </Canvas>
