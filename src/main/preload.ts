@@ -14,4 +14,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openUrl: (url: string) => ipcRenderer.invoke('open-url', url),
   openPath: (path: string) => ipcRenderer.invoke('open-path', path),
   getFileIcon: (path: string) => ipcRenderer.invoke('get-file-icon', path),
+  listMediaFiles: (directoryPath: string) => ipcRenderer.invoke('list-media-files', directoryPath),
 });

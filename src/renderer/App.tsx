@@ -94,6 +94,8 @@ const App: React.FC = () => {
     getWallSectionAt, clearSectionDrawings, copySectionDrawings, pasteSectionDrawings,
     // Clipboard
     canvasClipboard,
+    // Branching
+    createBranch,
   } = useSceneStore(useShallow(s => ({
     objects: s.objects,
     signs: s.signs,
@@ -134,6 +136,7 @@ const App: React.FC = () => {
     copySectionDrawings: s.copySectionDrawings,
     pasteSectionDrawings: s.pasteSectionDrawings,
     canvasClipboard: s.canvasClipboard,
+    createBranch: s.createBranch,
   })));
 
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -782,6 +785,12 @@ const App: React.FC = () => {
           onCopyWall={() => copySectionDrawings(wallSectionPopup.sectionId)}
           onPasteWall={() => pasteSectionDrawings(wallSectionPopup.sectionId, wallSectionPopup.wall)}
           canPaste={canvasClipboard != null && canvasClipboard.length > 0}
+          onCreateBranch={() => {
+            const section = wallSections.find(s => s.id === wallSectionPopup.sectionId);
+            if (section) {
+              createBranch((section.zStart + section.zEnd) / 2);
+            }
+          }}
         />
       )}
 
@@ -983,7 +992,8 @@ const WallSectionPopup: React.FC<{
   onCopyWall: () => void;
   onPasteWall: () => void;
   canPaste: boolean;
-}> = ({ x, y, onClose, onClearWall, onCopyWall, onPasteWall, canPaste }) => {
+  onCreateBranch?: () => void;
+}> = ({ x, y, onClose, onClearWall, onCopyWall, onPasteWall, canPaste, onCreateBranch }) => {
   const menuRef = React.useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -1031,6 +1041,17 @@ const WallSectionPopup: React.FC<{
           }}
         >
           Paste Wall
+        </div>
+      )}
+      {onCreateBranch && (
+        <div
+          className="context-menu-item"
+          onClick={() => {
+            onCreateBranch();
+            onClose();
+          }}
+        >
+          Create Branch
         </div>
       )}
       <div

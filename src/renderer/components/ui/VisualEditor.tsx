@@ -1,7 +1,7 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { useSceneStore } from '../../store/sceneStore';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { useSceneStore, DEFAULT_MATERIAL_SETTINGS, DEFAULT_NEURAL_PULSE_SETTINGS, DEFAULT_ATMOSPHERE_SETTINGS, DEFAULT_LIGHTING_COLORS } from '../../store/sceneStore';
 import { useShallow } from 'zustand/react/shallow';
-import { WallSide, LightFixtureStyle } from '../../../shared/types';
+import { WallSide, LightFixtureStyle, MaterialSettings, NeuralPulseSettings, AtmosphereSettings, LightingColors } from '../../../shared/types';
 import { getFixtureLengthRange } from '../objects/CeilingLight';
 
 interface VisualEditorProps {
@@ -32,6 +32,81 @@ const temperatureToColor = (kelvin: number): string => {
   return `rgb(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)})`;
 };
 
+// --- Reusable sub-components ---
+
+const SliderRow: React.FC<{
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  defaultValue: number;
+  format?: (v: number) => string;
+  onChange: (v: number) => void;
+}> = ({ label, value, min, max, step, defaultValue, format, onChange }) => (
+  <div className="ve-slider-row">
+    <span className="ve-label">{label}</span>
+    <span className="ve-value">{format ? format(value) : value.toFixed(2)}</span>
+    <input
+      type="range"
+      min={min}
+      max={max}
+      step={step}
+      value={value}
+      onChange={(e) => onChange(parseFloat(e.target.value))}
+    />
+    <button
+      className="ve-reset-btn"
+      onClick={() => onChange(defaultValue)}
+      title="Reset to default"
+    >
+      R
+    </button>
+  </div>
+);
+
+const ColorRow: React.FC<{
+  label: string;
+  value: string;
+  defaultValue: string;
+  onChange: (v: string) => void;
+}> = ({ label, value, defaultValue, onChange }) => (
+  <div className="ve-color-row">
+    <span className="ve-label">{label}</span>
+    <span className="ve-value">{value}</span>
+    <input
+      type="color"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="ve-color-input"
+    />
+    <button
+      className="ve-reset-btn"
+      onClick={() => onChange(defaultValue)}
+      title="Reset to default"
+    >
+      R
+    </button>
+  </div>
+);
+
+const Section: React.FC<{
+  title: string;
+  open: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}> = ({ title, open, onToggle, children }) => (
+  <div className="ve-section">
+    <button className="ve-section-header" onClick={onToggle}>
+      <span className="ve-section-chevron">{open ? '\u25BC' : '\u25B6'}</span>
+      <span className="ve-section-title">{title}</span>
+    </button>
+    {open && <div className="ve-section-body">{children}</div>}
+  </div>
+);
+
+// --- Main component ---
+
 export const VisualEditor: React.FC<VisualEditorProps> = ({ onSelectWallpaper }) => {
   const { settings, updateSettings, updateWallSettings, pendingWallpaper, clearPendingWallpaper } = useSceneStore(useShallow(s => ({
     settings: s.settings,
@@ -40,15 +115,52 @@ export const VisualEditor: React.FC<VisualEditorProps> = ({ onSelectWallpaper })
     pendingWallpaper: s.pendingWallpaper,
     clearPendingWallpaper: s.clearPendingWallpaper,
   })));
+
   const [isMinimized, setIsMinimized] = useState(false);
   const [position, setPosition] = useState({ x: window.innerWidth - 340, y: 20 });
   const [isDragging, setIsDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
-  const [activeTab, setActiveTab] = useState<'general' | 'walls'>('general');
   const [selectedWall, setSelectedWall] = useState<WallSide>('left');
   const editorRef = useRef<HTMLDivElement>(null);
 
-  // Handle window resize to maintain upper-right position
+  // Section open states
+  const [openSections, setOpenSections] = useState<Record<string, boolean>>({
+    lighting: true,
+    atmosphere: false,
+    materials: false,
+    neuralPulse: false,
+    walls: false,
+    navigation: false,
+  });
+
+  const toggleSection = useCallback((key: string) => {
+    setOpenSections(prev => ({ ...prev, [key]: !prev[key] }));
+  }, []);
+
+  // Resolve settings with defaults
+  const mat = settings.materials || DEFAULT_MATERIAL_SETTINGS;
+  const pulse = settings.neuralPulse || DEFAULT_NEURAL_PULSE_SETTINGS;
+  const atmo = settings.atmosphere || DEFAULT_ATMOSPHERE_SETTINGS;
+  const lc = settings.lightingColors || DEFAULT_LIGHTING_COLORS;
+
+  // Update helpers for nested settings
+  const updateMaterials = useCallback((field: keyof MaterialSettings, value: number) => {
+    updateSettings({ materials: { ...mat, [field]: value } });
+  }, [mat, updateSettings]);
+
+  const updatePulse = useCallback((field: keyof NeuralPulseSettings, value: string | number) => {
+    updateSettings({ neuralPulse: { ...pulse, [field]: value } });
+  }, [pulse, updateSettings]);
+
+  const updateAtmo = useCallback((field: keyof AtmosphereSettings, value: string) => {
+    updateSettings({ atmosphere: { ...atmo, [field]: value } });
+  }, [atmo, updateSettings]);
+
+  const updateLC = useCallback((field: keyof LightingColors, value: string) => {
+    updateSettings({ lightingColors: { ...lc, [field]: value } });
+  }, [lc, updateSettings]);
+
+  // Handle window resize
   useEffect(() => {
     const handleResize = () => {
       setPosition(prev => ({ x: window.innerWidth - 340, y: prev.y }));
@@ -94,6 +206,7 @@ export const VisualEditor: React.FC<VisualEditorProps> = ({ onSelectWallpaper })
   }, [isDragging, dragOffset]);
 
   const currentWall = settings.walls[selectedWall];
+  const pct = (v: number) => `${(v * 100).toFixed(0)}%`;
 
   return (
     <div
@@ -116,206 +229,220 @@ export const VisualEditor: React.FC<VisualEditorProps> = ({ onSelectWallpaper })
       </div>
 
       {!isMinimized && (
-        <div className="editor-content">
-          {/* Tabs */}
-          <div className="editor-tabs">
-            <button
-              className={`editor-tab ${activeTab === 'general' ? 'active' : ''}`}
-              onClick={() => setActiveTab('general')}
-            >
-              General
-            </button>
-            <button
-              className={`editor-tab ${activeTab === 'walls' ? 'active' : ''}`}
-              onClick={() => setActiveTab('walls')}
-            >
-              Walls
-            </button>
-          </div>
+        <div className="ve-scrollable">
+          {/* 1. LIGHTING */}
+          <Section title="LIGHTING" open={openSections.lighting} onToggle={() => toggleSection('lighting')}>
+            <SliderRow
+              label="Light Brightness" value={settings.lightBrightness}
+              min={1} max={20} step={0.5} defaultValue={3.0}
+              format={pct} onChange={(v) => updateSettings({ lightBrightness: v })}
+            />
+            <SliderRow
+              label="Ambient Intensity" value={settings.envBrightness}
+              min={0} max={1} step={0.01} defaultValue={0.08}
+              format={pct} onChange={(v) => updateSettings({ envBrightness: v })}
+            />
+            <ColorRow
+              label="Accent Color" value={lc.accentColor}
+              defaultValue={DEFAULT_LIGHTING_COLORS.accentColor}
+              onChange={(v) => updateLC('accentColor', v)}
+            />
+            <ColorRow
+              label="Secondary Color" value={lc.secondaryColor}
+              defaultValue={DEFAULT_LIGHTING_COLORS.secondaryColor}
+              onChange={(v) => updateLC('secondaryColor', v)}
+            />
+            <ColorRow
+              label="Ambient Tint" value={lc.ambientLightColor}
+              defaultValue={DEFAULT_LIGHTING_COLORS.ambientLightColor}
+              onChange={(v) => updateLC('ambientLightColor', v)}
+            />
+          </Section>
 
-          {activeTab === 'general' && (
-            <div className="editor-section">
-              {/* Light Brightness */}
-              <div className="editor-control">
-                <label>
-                  <span>Light Brightness</span>
-                  <span className="value">{(settings.lightBrightness * 100).toFixed(0)}%</span>
-                </label>
-                <input
-                  type="range"
-                  min="1"
-                  max="20"
-                  step="0.5"
-                  value={settings.lightBrightness}
-                  onChange={(e) => updateSettings({ lightBrightness: parseFloat(e.target.value) })}
-                />
-              </div>
+          {/* 2. ATMOSPHERE */}
+          <Section title="ATMOSPHERE" open={openSections.atmosphere} onToggle={() => toggleSection('atmosphere')}>
+            <ColorRow
+              label="Background" value={atmo.backgroundColor}
+              defaultValue={DEFAULT_ATMOSPHERE_SETTINGS.backgroundColor}
+              onChange={(v) => updateAtmo('backgroundColor', v)}
+            />
+            <ColorRow
+              label="Fog Color" value={atmo.fogColor}
+              defaultValue={DEFAULT_ATMOSPHERE_SETTINGS.fogColor}
+              onChange={(v) => updateAtmo('fogColor', v)}
+            />
+            <SliderRow
+              label="Fog Density" value={settings.haziness}
+              min={0} max={1} step={0.05} defaultValue={0.3}
+              format={pct} onChange={(v) => updateSettings({ haziness: v })}
+            />
+            <SliderRow
+              label="Draw Distance" value={settings.drawDistance}
+              min={10} max={300} step={10} defaultValue={120}
+              format={(v) => `${v}m`} onChange={(v) => updateSettings({ drawDistance: v })}
+            />
+          </Section>
 
-              {/* Environment Brightness */}
-              <div className="editor-control">
-                <label>
-                  <span>Ambient Light</span>
-                  <span className="value">{(settings.envBrightness * 100).toFixed(0)}%</span>
-                </label>
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.01"
-                  value={settings.envBrightness}
-                  onChange={(e) => updateSettings({ envBrightness: parseFloat(e.target.value) })}
-                />
-              </div>
+          {/* 3. MATERIALS */}
+          <Section title="MATERIALS" open={openSections.materials} onToggle={() => toggleSection('materials')}>
+            <SliderRow
+              label="Wall Metalness" value={mat.wallMetalness}
+              min={0} max={1} step={0.05} defaultValue={DEFAULT_MATERIAL_SETTINGS.wallMetalness}
+              onChange={(v) => updateMaterials('wallMetalness', v)}
+            />
+            <SliderRow
+              label="Wall Roughness" value={mat.wallRoughness}
+              min={0} max={1} step={0.05} defaultValue={DEFAULT_MATERIAL_SETTINGS.wallRoughness}
+              onChange={(v) => updateMaterials('wallRoughness', v)}
+            />
+            <SliderRow
+              label="Floor Metalness" value={mat.floorMetalness}
+              min={0} max={1} step={0.05} defaultValue={DEFAULT_MATERIAL_SETTINGS.floorMetalness}
+              onChange={(v) => updateMaterials('floorMetalness', v)}
+            />
+            <SliderRow
+              label="Floor Roughness" value={mat.floorRoughness}
+              min={0} max={1} step={0.05} defaultValue={DEFAULT_MATERIAL_SETTINGS.floorRoughness}
+              onChange={(v) => updateMaterials('floorRoughness', v)}
+            />
+            <SliderRow
+              label="Ceiling Metalness" value={mat.ceilingMetalness}
+              min={0} max={1} step={0.05} defaultValue={DEFAULT_MATERIAL_SETTINGS.ceilingMetalness}
+              onChange={(v) => updateMaterials('ceilingMetalness', v)}
+            />
+            <SliderRow
+              label="Ceiling Roughness" value={mat.ceilingRoughness}
+              min={0} max={1} step={0.05} defaultValue={DEFAULT_MATERIAL_SETTINGS.ceilingRoughness}
+              onChange={(v) => updateMaterials('ceilingRoughness', v)}
+            />
+            <SliderRow
+              label="Wireframe Opacity" value={mat.wireframeOpacity}
+              min={0} max={0.5} step={0.01} defaultValue={DEFAULT_MATERIAL_SETTINGS.wireframeOpacity}
+              onChange={(v) => updateMaterials('wireframeOpacity', v)}
+            />
+            <SliderRow
+              label="Edge Trim Opacity" value={mat.trimOpacity}
+              min={0} max={1} step={0.05} defaultValue={DEFAULT_MATERIAL_SETTINGS.trimOpacity}
+              onChange={(v) => updateMaterials('trimOpacity', v)}
+            />
+          </Section>
 
-              {/* Draw Distance */}
-              <div className="editor-control">
-                <label>
-                  <span>Draw Distance</span>
-                  <span className="value">{settings.drawDistance}m</span>
-                </label>
-                <input
-                  type="range"
-                  min="10"
-                  max="300"
-                  step="10"
-                  value={settings.drawDistance}
-                  onChange={(e) => updateSettings({ drawDistance: parseFloat(e.target.value) })}
-                />
-              </div>
+          {/* 4. NEURAL PULSE */}
+          <Section title="NEURAL PULSE" open={openSections.neuralPulse} onToggle={() => toggleSection('neuralPulse')}>
+            <ColorRow
+              label="Pulse Color" value={pulse.pulseColor}
+              defaultValue={DEFAULT_NEURAL_PULSE_SETTINGS.pulseColor}
+              onChange={(v) => updatePulse('pulseColor', v)}
+            />
+            <SliderRow
+              label="Base Glow" value={pulse.baseGlow}
+              min={0} max={0.5} step={0.01} defaultValue={DEFAULT_NEURAL_PULSE_SETTINGS.baseGlow}
+              onChange={(v) => updatePulse('baseGlow', v)}
+            />
+            <SliderRow
+              label="Ambient Speed" value={pulse.ambientSpeed}
+              min={0} max={5} step={0.1} defaultValue={DEFAULT_NEURAL_PULSE_SETTINGS.ambientSpeed}
+              onChange={(v) => updatePulse('ambientSpeed', v)}
+            />
+            <SliderRow
+              label="Ambient Intensity" value={pulse.ambientIntensity}
+              min={0} max={1} step={0.05} defaultValue={DEFAULT_NEURAL_PULSE_SETTINGS.ambientIntensity}
+              onChange={(v) => updatePulse('ambientIntensity', v)}
+            />
+            <SliderRow
+              label="Reactive Speed" value={pulse.reactiveSpeed}
+              min={0} max={8} step={0.1} defaultValue={DEFAULT_NEURAL_PULSE_SETTINGS.reactiveSpeed}
+              onChange={(v) => updatePulse('reactiveSpeed', v)}
+            />
+            <SliderRow
+              label="Reactive Intensity" value={pulse.reactiveIntensity}
+              min={0} max={3} step={0.1} defaultValue={DEFAULT_NEURAL_PULSE_SETTINGS.reactiveIntensity}
+              onChange={(v) => updatePulse('reactiveIntensity', v)}
+            />
+            <SliderRow
+              label="Sensitivity" value={pulse.reactiveSensitivity}
+              min={0} max={10} step={0.5} defaultValue={DEFAULT_NEURAL_PULSE_SETTINGS.reactiveSensitivity}
+              onChange={(v) => updatePulse('reactiveSensitivity', v)}
+            />
+          </Section>
 
-              {/* Haziness */}
-              <div className="editor-control">
-                <label>
-                  <span>Fog Density</span>
-                  <span className="value">{(settings.haziness * 100).toFixed(0)}%</span>
-                </label>
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.05"
-                  value={settings.haziness}
-                  onChange={(e) => updateSettings({ haziness: parseFloat(e.target.value) })}
-                />
-              </div>
-
-              {/* Navigation Speed */}
-              <div className="editor-control">
-                <label>
-                  <span>Navigation Speed</span>
-                  <span className="value">{(settings.navigationSpeed * 100).toFixed(0)}%</span>
-                </label>
-                <input
-                  type="range"
-                  min="0.005"
-                  max="0.15"
-                  step="0.005"
-                  value={settings.navigationSpeed}
-                  onChange={(e) => updateSettings({ navigationSpeed: parseFloat(e.target.value) })}
-                />
-              </div>
+          {/* 5. WALLS */}
+          <Section title="WALLS" open={openSections.walls} onToggle={() => toggleSection('walls')}>
+            <div className="wall-selector">
+              {(['left', 'right', 'floor', 'ceiling'] as WallSide[]).map((wall) => (
+                <button
+                  key={wall}
+                  className={`wall-btn ${selectedWall === wall ? 'active' : ''}`}
+                  onClick={() => setSelectedWall(wall)}
+                >
+                  {wall.charAt(0).toUpperCase() + wall.slice(1)}
+                </button>
+              ))}
             </div>
-          )}
 
-          {activeTab === 'walls' && (
-            <div className="editor-section">
-              {/* Wall Selector */}
-              <div className="wall-selector">
-                {(['left', 'right', 'floor', 'ceiling'] as WallSide[]).map((wall) => (
+            <ColorRow
+              label="Color" value={currentWall.color}
+              defaultValue={selectedWall === 'floor' || selectedWall === 'ceiling' ? '#1a0f05' : '#2a1a0a'}
+              onChange={(v) => updateWallSettings(selectedWall, { color: v })}
+            />
+            <SliderRow
+              label="Brightness" value={currentWall.brightness}
+              min={0} max={2} step={0.05} defaultValue={1.0}
+              format={pct} onChange={(v) => updateWallSettings(selectedWall, { brightness: v })}
+            />
+            <SliderRow
+              label="Opacity" value={currentWall.opacity}
+              min={0.1} max={1} step={0.05} defaultValue={1.0}
+              format={pct} onChange={(v) => updateWallSettings(selectedWall, { opacity: v })}
+            />
+
+            {/* Wall Image */}
+            <div className="editor-control wallpaper-control">
+              <label>
+                <span>Wall Image</span>
+              </label>
+              {pendingWallpaper && pendingWallpaper.wall === selectedWall ? (
+                <div className="wallpaper-preview-active">
+                  <div className="preview-status">
+                    Preview active - scroll to position and click checkmark to place
+                  </div>
+                  <div className="wallpaper-preview">
+                    {pendingWallpaper.imagePath.split(/[/\\]/).pop()}
+                  </div>
                   <button
-                    key={wall}
-                    className={`wall-btn ${selectedWall === wall ? 'active' : ''}`}
-                    onClick={() => setSelectedWall(wall)}
+                    className="wallpaper-btn remove"
+                    onClick={() => clearPendingWallpaper()}
                   >
-                    {wall.charAt(0).toUpperCase() + wall.slice(1)}
+                    Cancel
                   </button>
-                ))}
-              </div>
-
-              {/* Wall Color */}
-              <div className="editor-control">
-                <label>
-                  <span>Color</span>
-                  <input
-                    type="color"
-                    value={currentWall.color}
-                    onChange={(e) => updateWallSettings(selectedWall, { color: e.target.value })}
-                    className="color-input"
-                  />
-                </label>
-              </div>
-
-              {/* Wall Brightness */}
-              <div className="editor-control">
-                <label>
-                  <span>Brightness</span>
-                  <span className="value">{(currentWall.brightness * 100).toFixed(0)}%</span>
-                </label>
-                <input
-                  type="range"
-                  min="0"
-                  max="2"
-                  step="0.05"
-                  value={currentWall.brightness}
-                  onChange={(e) => updateWallSettings(selectedWall, { brightness: parseFloat(e.target.value) })}
-                />
-              </div>
-
-              {/* Wall Opacity */}
-              <div className="editor-control">
-                <label>
-                  <span>Opacity</span>
-                  <span className="value">{(currentWall.opacity * 100).toFixed(0)}%</span>
-                </label>
-                <input
-                  type="range"
-                  min="0.1"
-                  max="1"
-                  step="0.05"
-                  value={currentWall.opacity}
-                  onChange={(e) => updateWallSettings(selectedWall, { opacity: parseFloat(e.target.value) })}
-                />
-              </div>
-
-              {/* Wall Image */}
-              <div className="editor-control wallpaper-control">
-                <label>
-                  <span>Wall Image</span>
-                </label>
-                {pendingWallpaper && pendingWallpaper.wall === selectedWall ? (
-                  <div className="wallpaper-preview-active">
-                    <div className="preview-status">
-                      Preview active - scroll to position and click checkmark to place
-                    </div>
-                    <div className="wallpaper-preview">
-                      {pendingWallpaper.imagePath.split(/[/\\]/).pop()}
-                    </div>
-                    <button
-                      className="wallpaper-btn remove"
-                      onClick={() => clearPendingWallpaper()}
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                ) : (
-                  <div className="wallpaper-actions">
-                    <button
-                      className="wallpaper-btn"
-                      onClick={() => onSelectWallpaper(selectedWall)}
-                      disabled={pendingWallpaper !== null}
-                    >
-                      Add Image
-                    </button>
-                  </div>
-                )}
-                {pendingWallpaper && pendingWallpaper.wall !== selectedWall && (
-                  <div className="wallpaper-hint">
-                    Image preview active on {pendingWallpaper.wall} wall
-                  </div>
-                )}
-              </div>
+                </div>
+              ) : (
+                <div className="wallpaper-actions">
+                  <button
+                    className="wallpaper-btn"
+                    onClick={() => onSelectWallpaper(selectedWall)}
+                    disabled={pendingWallpaper !== null}
+                  >
+                    Add Image
+                  </button>
+                </div>
+              )}
+              {pendingWallpaper && pendingWallpaper.wall !== selectedWall && (
+                <div className="wallpaper-hint">
+                  Image preview active on {pendingWallpaper.wall} wall
+                </div>
+              )}
             </div>
-          )}
+          </Section>
+
+          {/* 6. NAVIGATION */}
+          <Section title="NAVIGATION" open={openSections.navigation} onToggle={() => toggleSection('navigation')}>
+            <SliderRow
+              label="Move Speed" value={settings.navigationSpeed}
+              min={0.005} max={0.15} step={0.005} defaultValue={0.08}
+              format={pct} onChange={(v) => updateSettings({ navigationSpeed: v })}
+            />
+          </Section>
         </div>
       )}
     </div>

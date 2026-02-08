@@ -896,3 +896,347 @@ html, body, #root {
   background: #666;
   cursor: not-allowed;
 }
+
+/* Visual Editor — scrollable accordion layout */
+.ve-scrollable {
+  padding: 8px;
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(212, 160, 68, 0.3) transparent;
+}
+
+.ve-scrollable::-webkit-scrollbar {
+  width: 6px;
+}
+
+.ve-scrollable::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.ve-scrollable::-webkit-scrollbar-thumb {
+  background: rgba(212, 160, 68, 0.3);
+  border-radius: 3px;
+}
+
+/* Section accordion */
+.ve-section {
+  margin-bottom: 2px;
+}
+
+.ve-section-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.04);
+  color: #d4a044;
+  cursor: pointer;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  text-align: left;
+  transition: background 0.15s;
+}
+
+.ve-section-header:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.ve-section-chevron {
+  font-size: 8px;
+  width: 10px;
+  flex-shrink: 0;
+}
+
+.ve-section-title {
+  flex: 1;
+}
+
+.ve-section-body {
+  padding: 8px 4px 12px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Slider row: 4-column grid — label | value | slider | reset */
+.ve-slider-row {
+  display: grid;
+  grid-template-columns: 1fr 50px 1fr 24px;
+  gap: 6px;
+  align-items: center;
+}
+
+.ve-slider-row input[type="range"] {
+  width: 100%;
+  height: 6px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 3px;
+  outline: none;
+  cursor: pointer;
+}
+
+.ve-slider-row input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  background: #d4a044;
+  border-radius: 50%;
+  cursor: grab;
+  border: 1.5px solid #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+}
+
+.ve-slider-row input[type="range"]::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  background: #d4a044;
+  border-radius: 50%;
+  cursor: grab;
+  border: 1.5px solid #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+}
+
+.ve-slider-row input[type="range"]::-moz-range-track {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 3px;
+  height: 6px;
+}
+
+/* Color row: same grid as slider */
+.ve-color-row {
+  display: grid;
+  grid-template-columns: 1fr 60px 28px 24px;
+  gap: 6px;
+  align-items: center;
+}
+
+.ve-color-input {
+  width: 28px;
+  height: 20px;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  padding: 0;
+  background: transparent;
+}
+
+.ve-color-input::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.ve-color-input::-webkit-color-swatch {
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 3px;
+}
+
+/* Shared label / value / reset styles */
+.ve-label {
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 11px;
+  font-family: 'Courier New', Courier, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ve-value {
+  color: #d4a044;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 10px;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ve-reset-btn {
+  width: 24px;
+  height: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.4);
+  cursor: pointer;
+  font-size: 9px;
+  font-family: 'Courier New', Courier, monospace;
+  font-weight: bold;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+  padding: 0;
+}
+
+.ve-reset-btn:hover {
+  background: rgba(212, 160, 68, 0.15);
+  border-color: rgba(212, 160, 68, 0.3);
+  color: #d4a044;
+}
+
+/* Hologram Projector Controls */
+.hologram-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(10, 6, 4, 0.85);
+  border: 1px solid rgba(212, 160, 68, 0.3);
+  border-radius: 8px;
+  padding: 6px 12px;
+  backdrop-filter: blur(8px);
+  white-space: nowrap;
+  user-select: none;
+}
+
+.hologram-btn {
+  background: rgba(212, 160, 68, 0.1);
+  border: 1px solid rgba(212, 160, 68, 0.3);
+  color: #d4a044;
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  transition: all 0.15s;
+  padding: 0;
+}
+
+.hologram-btn:hover {
+  background: rgba(212, 160, 68, 0.25);
+  border-color: rgba(212, 160, 68, 0.6);
+}
+
+.hologram-close {
+  margin-left: 8px;
+  color: #ff6b6b;
+  border-color: rgba(255, 107, 107, 0.3);
+  background: rgba(255, 107, 107, 0.1);
+}
+
+.hologram-close:hover {
+  background: rgba(255, 107, 107, 0.25);
+  border-color: rgba(255, 107, 107, 0.6);
+}
+
+.hologram-info {
+  color: rgba(212, 160, 68, 0.7);
+  font-size: 11px;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Radial Pie Hover Menu on 3D Objects */
+.radial-menu {
+  position: relative;
+  width: 140px;
+  height: 140px;
+  border-radius: 50%;
+  user-select: none;
+  animation: radial-pop 0.15s ease-out;
+}
+
+@keyframes radial-pop {
+  from { transform: scale(0.5); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+/* Base wedge — absolute fill, clip-pathed into a 120° slice */
+.radial-wedge {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  border: none;
+  cursor: pointer;
+  transition: filter 0.15s, opacity 0.15s;
+  padding: 0;
+  font-size: 20px;
+}
+
+.radial-wedge:hover {
+  filter: brightness(1.35);
+}
+
+/* Top wedge (Play): 300°→60° arc — green */
+.radial-wedge-top {
+  clip-path: polygon(50% 50%, 6.7% 25%, 25% 6.7%, 50% 0%, 75% 6.7%, 93.3% 25%);
+  background: rgba(76, 175, 80, 0.55);
+  color: #fff;
+}
+.radial-wedge-top:hover {
+  background: rgba(76, 175, 80, 0.8);
+}
+
+/* Bottom-right wedge (Folder): 60°→180° arc — gold */
+.radial-wedge-br {
+  clip-path: polygon(50% 50%, 93.3% 25%, 100% 50%, 93.3% 75%, 75% 93.3%, 50% 100%);
+  background: rgba(212, 160, 68, 0.45);
+  color: #fff;
+}
+.radial-wedge-br:hover {
+  background: rgba(212, 160, 68, 0.75);
+}
+
+/* Bottom-left wedge (+More): 180°→300° arc — gray */
+.radial-wedge-bl {
+  clip-path: polygon(50% 50%, 50% 100%, 25% 93.3%, 6.7% 75%, 0% 50%, 6.7% 25%);
+  background: rgba(120, 120, 130, 0.45);
+  color: rgba(255, 255, 255, 0.9);
+}
+.radial-wedge-bl:hover {
+  background: rgba(120, 120, 130, 0.7);
+}
+
+/* Center hole — creates the donut effect */
+.radial-center {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 36%;
+  height: 36%;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: rgba(10, 6, 4, 0.85);
+  border: 1px solid rgba(212, 160, 68, 0.25);
+  pointer-events: none;
+}
+
+/* Icon positioning inside each wedge */
+.radial-wedge-icon {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.radial-icon-top {
+  top: 12%;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.radial-icon-br {
+  bottom: 22%;
+  right: 14%;
+}
+
+.radial-icon-bl {
+  bottom: 22%;
+  left: 14%;
+  font-size: 11px;
+  font-weight: 700;
+}

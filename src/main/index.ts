@@ -1,8 +1,8 @@
-import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, shell, net, protocol } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import Store from 'electron-store';
-import { SceneState } from '../shared/types';
+import { SceneState, MediaFileInfo } from '../shared/types';
 
 const store = new Store<{ sceneState: SceneState }>();
 
@@ -59,7 +59,31 @@ function createWindow() {
   });
 }
 
+// Media file extensions
+const VIDEO_EXTENSIONS = new Set(['.mp4', '.webm', '.mov', '.avi', '.mkv']);
+const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
+
+// Register custom protocol for video streaming (must be before app.whenReady)
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'media-file', privileges: { stream: true, bypassCSP: true, corsEnabled: true, supportFetchAPI: true } },
+]);
+
 app.whenReady().then(() => {
+  // Handle media-file:// protocol for streaming video files
+  protocol.handle('media-file', (request) => {
+    // URL format: media-file:///C:/path/to/file.mp4
+    const filePath = decodeURIComponent(new URL(request.url).pathname);
+    // On Windows, pathname starts with / before drive letter — remove it
+    const normalizedPath = process.platform === 'win32' && filePath.startsWith('/')
+      ? filePath.slice(1)
+      : filePath;
+
+    if (!isValidPath(normalizedPath)) {
+      return new Response('Invalid path', { status: 400 });
+    }
+    return net.fetch('file:///' + normalizedPath);
+  });
+
   createWindow();
 
   app.on('activate', () => {
@@ -231,6 +255,47 @@ ipcMain.handle('get-file-icon', async (_, filePath: string) => {
     return icon.toDataURL();
   } catch (error) {
     console.error('Failed to get file icon:', error);
+    throw error;
+  }
+});
+
+ipcMain.handle('list-media-files', async (_, directoryPath: string): Promise<MediaFileInfo[]> => {
+  if (!isValidPath(directoryPath)) {
+    throw new Error('Invalid directory path');
+  }
+  try {
+    const entries = fs.readdirSync(directoryPath, { withFileTypes: true });
+    const mediaFiles: MediaFileInfo[] = [];
+
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      const ext = path.extname(entry.name).toLowerCase();
+      if (VIDEO_EXTENSIONS.has(ext)) {
+        mediaFiles.push({
+          name: entry.name,
+          path: path.join(directoryPath, entry.name),
+          type: 'video',
+          extension: ext,
+        });
+      } else if (IMAGE_EXTENSIONS.has(ext)) {
+        mediaFiles.push({
+          name: entry.name,
+          path: path.join(directoryPath, entry.name),
+          type: 'image',
+          extension: ext,
+        });
+      }
+    }
+
+    // Sort: videos first, then images, alphabetical within each group
+    mediaFiles.sort((a, b) => {
+      if (a.type !== b.type) return a.type === 'video' ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+
+    return mediaFiles;
+  } catch (error) {
+    console.error('Failed to list media files:', error);
     throw error;
   }
 });
