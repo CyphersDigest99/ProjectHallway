@@ -37,7 +37,6 @@ export const HologramProjector: React.FC<HologramProjectorProps> = ({
   scrollZ,
 }) => {
   const screenMaterialRef = useRef<THREE.ShaderMaterial | null>(null);
-  const beamRef = useRef<THREE.Mesh>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const videoTextureRef = useRef<THREE.VideoTexture | null>(null);
   const [fadeIn, setFadeIn] = useState(0);
@@ -183,12 +182,11 @@ export const HologramProjector: React.FC<HologramProjectorProps> = ({
   }, [currentIndex, screenMaterial]);
 
   // Beam geometry: rectangular pyramid from projector (tip) to screen (rectangle base)
-  // Built in world space so no rotation needed — base matches screen dimensions exactly
+  // Built in world space — includes per-vertex fade attribute (1.0 at tip, 0.0 at base)
   const beamGeometry = useMemo(() => {
     const tip = new THREE.Vector3(projectorPosition.x, projectorPosition.y, projectorPosition.z);
     const center = new THREE.Vector3(screenPosition.x, screenPosition.y, screenPosition.z);
 
-    // Screen is a planeGeometry (faces +Z), so width = X, height = Y
     const hw = screenSize[0] * 0.5;
     const hh = screenSize[1] * 0.5;
 
@@ -205,11 +203,50 @@ export const HologramProjector: React.FC<HologramProjectorProps> = ({
       tip.x, tip.y, tip.z,  tl.x, tl.y, tl.z,  bl.x, bl.y, bl.z,
     ]);
 
+    // Fade: 1.0 at tip (bright/dense), 0.0 at base (transparent at screen)
+    // Each triangle: vertex 0 = tip, vertices 1 & 2 = base corners
+    const fade = new Float32Array([
+      1, 0, 0,  1, 0, 0,  1, 0, 0,  1, 0, 0,
+    ]);
+
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute('aFade', new THREE.BufferAttribute(fade, 1));
     geo.computeVertexNormals();
     return geo;
   }, [screenPosition, projectorPosition, screenSize]);
+
+  // Beam shader: gold color with gradient opacity (bright at tip → transparent at screen)
+  const beamMaterial = useMemo(() => {
+    return new THREE.ShaderMaterial({
+      uniforms: {
+        uOpacity: { value: 0.0 },
+      },
+      vertexShader: /* glsl */ `
+        attribute float aFade;
+        varying float vFade;
+        void main() {
+          vFade = aFade;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform float uOpacity;
+        varying float vFade;
+        void main() {
+          // Gold color (#d4a044), brightness concentrated at tip
+          vec3 color = vec3(0.831, 0.627, 0.267);
+          // Pow curve makes the falloff more dramatic — dense core near projector
+          float alpha = pow(vFade, 1.5) * uOpacity;
+          gl_FragColor = vec4(color, alpha);
+        }
+      `,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+  }, []);
 
   // Animation: fade-in, scanlines, auto-close
   useFrame(() => {
@@ -225,11 +262,9 @@ export const HologramProjector: React.FC<HologramProjectorProps> = ({
       videoTextureRef.current.needsUpdate = true;
     }
 
-    // Pulsing beam opacity
-    if (beamRef.current) {
-      const pulse = 0.08 + Math.sin(elapsed * 1.5) * 0.035;
-      (beamRef.current.material as THREE.MeshBasicMaterial).opacity = pulse * opacity;
-    }
+    // Pulsing beam opacity — drives the gradient shader
+    const pulse = 0.12 + Math.sin(elapsed * 1.5) * 0.05;
+    beamMaterial.uniforms.uOpacity.value = pulse * opacity;
 
     // Auto-close if camera moves too far
     const camZ = -scrollZ;
@@ -244,28 +279,20 @@ export const HologramProjector: React.FC<HologramProjectorProps> = ({
     return () => {
       screenMaterial.dispose();
       beamGeometry.dispose();
+      beamMaterial.dispose();
     };
-  }, [screenMaterial, beamGeometry]);
+  }, [screenMaterial, beamGeometry, beamMaterial]);
 
   // Block clicks from passing through to walls behind
   const stopPropagation = (e: any) => { e.stopPropagation(); };
 
   return (
     <group>
-      {/* Beam effect: rectangular pyramid from projector (point) to screen (rectangle) */}
+      {/* Beam effect: gradient pyramid — bright at projector, fades toward screen */}
       <mesh
-        ref={beamRef}
         geometry={beamGeometry}
-      >
-        <meshBasicMaterial
-          color="#d4a044"
-          transparent
-          opacity={0}
-          blending={THREE.AdditiveBlending}
-          side={THREE.DoubleSide}
-          depthWrite={false}
-        />
-      </mesh>
+        material={beamMaterial}
+      />
 
       {/* Invisible click blocker behind screen — prevents wall clicks */}
       <mesh

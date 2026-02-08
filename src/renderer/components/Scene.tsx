@@ -1873,8 +1873,8 @@ const PictureFrame: React.FC<{
     setHovered(true);
     document.body.style.cursor = 'pointer';
     onHover(object, { x: e.clientX, y: e.clientY });
-    if (radialTimerRef.current) clearTimeout(radialTimerRef.current);
-    radialTimerRef.current = setTimeout(() => setShowRadial(true), 150);
+    if (radialTimerRef.current) { clearTimeout(radialTimerRef.current); radialTimerRef.current = null; }
+    setShowRadial(true);
   };
 
   const handlePointerLeave = () => {
@@ -1883,7 +1883,7 @@ const PictureFrame: React.FC<{
       document.body.style.cursor = 'auto';
       onHover(null);
       if (radialTimerRef.current) { clearTimeout(radialTimerRef.current); radialTimerRef.current = null; }
-      radialTimerRef.current = setTimeout(() => setShowRadial(false), 300);
+      radialTimerRef.current = setTimeout(() => setShowRadial(false), 500);
     }
   };
 
@@ -1915,7 +1915,7 @@ const PictureFrame: React.FC<{
 
   return (
     <group position={[currentPos.x, currentPos.y, currentPos.z]} rotation={rotation}>
-      {/* Invisible hit buffer — prevents accidental wall clicks around the frame */}
+      {/* Invisible hit buffer — hover zone for radial menu + click capture */}
       <mesh
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
@@ -1924,7 +1924,7 @@ const PictureFrame: React.FC<{
         onPointerEnter={handlePointerEnter}
         onPointerLeave={handlePointerLeave}
       >
-        <boxGeometry args={[frameWidth + 1.5, frameHeight + 1.5, 0.3]} />
+        <boxGeometry args={[frameWidth + 2.5, frameHeight + 2.5, 0.5]} />
         <meshBasicMaterial transparent opacity={0} depthWrite={false} />
       </mesh>
 
@@ -1934,8 +1934,6 @@ const PictureFrame: React.FC<{
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onContextMenu={handleContextMenu}
-        onPointerEnter={handlePointerEnter}
-        onPointerLeave={handlePointerLeave}
       >
         <boxGeometry args={[frameWidth + 0.25, frameHeight + 0.25, frameDepth]} />
         <meshStandardMaterial
@@ -1993,18 +1991,22 @@ const PictureFrame: React.FC<{
           style={{ pointerEvents: 'auto' }}
         >
           <div
-            className="radial-menu"
+            className="radial-menu-pad"
             onMouseEnter={() => {
               if (radialTimerRef.current) { clearTimeout(radialTimerRef.current); radialTimerRef.current = null; }
               setShowRadial(true);
             }}
             onMouseLeave={() => {
-              setShowRadial(false);
-              setHovered(false);
-              document.body.style.cursor = 'auto';
-              onHover(null);
+              if (radialTimerRef.current) { clearTimeout(radialTimerRef.current); radialTimerRef.current = null; }
+              radialTimerRef.current = setTimeout(() => {
+                setShowRadial(false);
+                setHovered(false);
+                document.body.style.cursor = 'auto';
+                onHover(null);
+              }, 500);
             }}
           >
+          <div className="radial-menu">
             {/* Top wedge: Play / Project media (green) */}
             <button
               className="radial-wedge radial-wedge-top"
@@ -2053,6 +2055,7 @@ const PictureFrame: React.FC<{
 
             {/* Center hole overlay */}
             <div className="radial-center" />
+          </div>
           </div>
         </Html>
       )}
@@ -2146,9 +2149,8 @@ const Object3D: React.FC<{
     setHovered(true);
     document.body.style.cursor = 'pointer';
     onHover(object, { x: e.clientX, y: e.clientY });
-    // Show radial menu after brief delay to avoid flicker
-    if (radialTimerRef.current) clearTimeout(radialTimerRef.current);
-    radialTimerRef.current = setTimeout(() => setShowRadial(true), 150);
+    if (radialTimerRef.current) { clearTimeout(radialTimerRef.current); radialTimerRef.current = null; }
+    setShowRadial(true);
   };
 
   const handlePointerLeave = () => {
@@ -2157,8 +2159,7 @@ const Object3D: React.FC<{
       document.body.style.cursor = 'auto';
       onHover(null);
       if (radialTimerRef.current) { clearTimeout(radialTimerRef.current); radialTimerRef.current = null; }
-      // Small delay to let user move mouse to radial menu
-      radialTimerRef.current = setTimeout(() => setShowRadial(false), 300);
+      radialTimerRef.current = setTimeout(() => setShowRadial(false), 500);
     }
   };
 
@@ -2199,7 +2200,7 @@ const Object3D: React.FC<{
 
   return (
     <group position={[offsetPos.x, offsetPos.y, offsetPos.z]}>
-      {/* Invisible hit buffer — larger than the object to prevent accidental wall clicks */}
+      {/* Invisible hit buffer — hover zone for radial menu + click capture */}
       <mesh
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
@@ -2208,7 +2209,7 @@ const Object3D: React.FC<{
         onPointerEnter={handlePointerEnter}
         onPointerLeave={handlePointerLeave}
       >
-        <boxGeometry args={[3, 3, 2]} />
+        <boxGeometry args={[4, 4, 3]} />
         <meshBasicMaterial transparent opacity={0} depthWrite={false} />
       </mesh>
 
@@ -2218,8 +2219,6 @@ const Object3D: React.FC<{
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onContextMenu={handleContextMenu}
-        onPointerEnter={handlePointerEnter}
-        onPointerLeave={handlePointerLeave}
       >
         {renderGeometry()}
         <meshStandardMaterial
@@ -2256,19 +2255,24 @@ const Object3D: React.FC<{
           distanceFactor={15}
           style={{ pointerEvents: 'auto' }}
         >
+          {/* Invisible padding zone around the pie — bridges gap between 3D hit area and menu */}
           <div
-            className="radial-menu"
+            className="radial-menu-pad"
             onMouseEnter={() => {
               if (radialTimerRef.current) { clearTimeout(radialTimerRef.current); radialTimerRef.current = null; }
               setShowRadial(true);
             }}
             onMouseLeave={() => {
-              setShowRadial(false);
-              setHovered(false);
-              document.body.style.cursor = 'auto';
-              onHover(null);
+              if (radialTimerRef.current) { clearTimeout(radialTimerRef.current); radialTimerRef.current = null; }
+              radialTimerRef.current = setTimeout(() => {
+                setShowRadial(false);
+                setHovered(false);
+                document.body.style.cursor = 'auto';
+                onHover(null);
+              }, 500);
             }}
           >
+          <div className="radial-menu">
             {/* Top wedge: Play / Project media (green) */}
             <button
               className="radial-wedge radial-wedge-top"
@@ -2317,6 +2321,7 @@ const Object3D: React.FC<{
 
             {/* Center hole overlay */}
             <div className="radial-center" />
+          </div>
           </div>
         </Html>
       )}

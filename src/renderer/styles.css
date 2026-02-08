@@ -1138,6 +1138,16 @@ html, body, #root {
 }
 
 /* Radial Pie Hover Menu on 3D Objects */
+
+/* Invisible padding zone — bridges the gap between 3D hit area and pie menu */
+.radial-menu-pad {
+  padding: 30px;
+  margin: -30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .radial-menu {
   position: relative;
   width: 140px;

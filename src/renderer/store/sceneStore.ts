@@ -1248,11 +1248,11 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
       const mediaFiles = await window.electronAPI.listMediaFiles(object.directoryPath);
       if (mediaFiles.length === 0) return;
 
-      // Screen position: centered in tunnel, 3m in front of the object
+      // Screen position: centered in tunnel, 7m toward the camera from the object
       const screenPosition: Vector3 = {
         x: 0,
-        y: 1.5,
-        z: object.position.z - 3,
+        y: 0.5,
+        z: object.position.z + 7,
       };
 
       set({
