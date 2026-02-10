@@ -11,7 +11,7 @@ export interface MediaFileInfo {
 
 export type WallSide = 'left' | 'right' | 'floor' | 'ceiling';
 
-export type NavigationMode = 'normal' | 'canvas' | 'decorating';
+export type NavigationMode = 'normal' | 'canvas' | 'decorating' | 'choosing';
 
 export type WallTextureType = 'default' | 'metal' | 'stucco' | 'wood' | 'glass' | 'brick' | 'concrete';
 

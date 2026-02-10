@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { v4 as uuidv4 } from 'uuid';
 import { SceneObject, ObjectType, Vector3, SceneState, HighwaySign, WallSide, CeilingLight, SceneSettings, WallSettings, WallImage, WallSection, WallTextureType, AnyCanvasItem, NavigationMode, DrawingStroke, DateMarker, LightFixtureStyle, CanvasRichTextItem, MaterialSettings, NeuralPulseSettings, AtmosphereSettings, LightingColors, TunnelTopology, MediaFileInfo } from '../../shared/types';
-import { createLegacyTopology, computeMaxDepthFromObjects, getPathForEdge, getEdge as getTopologyEdge, getNode as getTopologyNode, clearPathCache } from '../tunnel/TunnelGraph';
+import { createLegacyTopology, computeMaxDepthFromObjects, getPathForEdge, getEdge as getTopologyEdge, getNode as getTopologyNode, getEdgesAtNode, isIntersection, clearPathCache } from '../tunnel/TunnelGraph';
 
 export const DEFAULT_MATERIAL_SETTINGS: MaterialSettings = {
   wallMetalness: 0.15,
@@ -103,6 +103,23 @@ interface StrokeHistory {
   stroke: DrawingStroke;
 }
 
+interface ForkForwardEdge {
+  edgeId: string;
+  nodeId: string;          // intersection node ID (for navigateToEdge)
+  direction: Vector3;      // normalized direction from node toward edge
+  label: string;
+}
+
+export interface ForkChoosingState {
+  nodeId: string;
+  nodePosition: Vector3;
+  approachEdgeId: string;
+  forwardEdges: ForkForwardEdge[];
+  selectedIndex: number;
+  approachScrollZ: number;
+  phase: 'ascending' | 'overhead' | 'descending';
+}
+
 interface ActiveHologram {
   objectId: string;
   directoryPath: string;
@@ -159,6 +176,10 @@ interface SceneStore {
   currentEdgeId: string;
   currentT: number; // 0..1 position along current edge
   pendingNavigation: { edgeId: string; scrollZ: number } | null;
+
+  // Fork choosing (bird's-eye Y-fork navigation)
+  forkChoosingState: ForkChoosingState | null;
+  forkCooldownNodeId: string | null;
 
   // Hologram projector (ephemeral, not persisted)
   activeHologram: ActiveHologram | null;
@@ -251,6 +272,13 @@ interface SceneStore {
   createBranch: (atDepth: number, branchAngle?: number) => string | null; // Returns new edge ID
   navigateToEdge: (edgeId: string, fromNodeId: string) => void;
   clearPendingNavigation: () => void;
+
+  // Fork choosing actions
+  enterForkChoosing: (nodeId: string, scrollZ: number) => void;
+  exitForkChoosing: () => void;
+  cycleForkSelection: (delta: number) => void;
+  confirmForkSelection: () => void;
+  setForkPhase: (phase: 'ascending' | 'overhead' | 'descending') => void;
 
   // Hologram actions
   openHologram: (objectId: string) => Promise<void>;
@@ -368,6 +396,10 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
   currentEdgeId: DEFAULT_TOPOLOGY.rootEdgeId,
   currentT: 0,
   pendingNavigation: null,
+
+  // Fork choosing
+  forkChoosingState: null,
+  forkCooldownNodeId: null,
 
   // Hologram projector
   activeHologram: null,
@@ -1236,6 +1268,88 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
 
   clearPendingNavigation: () => {
     set({ pendingNavigation: null });
+  },
+
+  // Fork choosing actions
+  enterForkChoosing: (nodeId, scrollZ) => {
+    const { tunnelTopology, currentEdgeId, forkCooldownNodeId } = get();
+    if (forkCooldownNodeId === nodeId) return;
+    if (!isIntersection(tunnelTopology, nodeId)) return;
+
+    const node = getTopologyNode(tunnelTopology, nodeId);
+    if (!node) return;
+
+    // Get all edges at this node, excluding the approach edge
+    const allEdges = getEdgesAtNode(tunnelTopology, nodeId);
+    const forwardEdges = allEdges
+      .filter(e => e.id !== currentEdgeId)
+      .map((e, i) => {
+        // Direction: from node toward the other endpoint of this edge
+        const otherNodeId = e.fromNodeId === nodeId ? e.toNodeId : e.fromNodeId;
+        const otherNode = getTopologyNode(tunnelTopology, otherNodeId);
+        const dx = (otherNode?.position.x ?? 0) - node.position.x;
+        const dy = (otherNode?.position.y ?? 0) - node.position.y;
+        const dz = (otherNode?.position.z ?? 0) - node.position.z;
+        const len = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+        return {
+          edgeId: e.id,
+          nodeId: nodeId,
+          direction: { x: dx / len, y: dy / len, z: dz / len },
+          label: otherNode?.label || `Path ${String.fromCharCode(65 + i)}`,
+        };
+      });
+
+    if (forwardEdges.length === 0) return;
+
+    set({
+      navigationMode: 'choosing',
+      forkChoosingState: {
+        nodeId,
+        nodePosition: { ...node.position },
+        approachEdgeId: currentEdgeId,
+        forwardEdges,
+        selectedIndex: 0,
+        approachScrollZ: scrollZ,
+        phase: 'ascending',
+      },
+    });
+  },
+
+  exitForkChoosing: () => {
+    const { forkChoosingState } = get();
+    set({
+      navigationMode: 'normal',
+      forkChoosingState: null,
+      forkCooldownNodeId: forkChoosingState?.nodeId ?? null,
+    });
+  },
+
+  cycleForkSelection: (delta) => {
+    const { forkChoosingState } = get();
+    if (!forkChoosingState || forkChoosingState.phase !== 'overhead') return;
+
+    const count = forkChoosingState.forwardEdges.length;
+    const newIndex = ((forkChoosingState.selectedIndex + delta) % count + count) % count;
+    set({
+      forkChoosingState: { ...forkChoosingState, selectedIndex: newIndex },
+    });
+  },
+
+  confirmForkSelection: () => {
+    const { forkChoosingState } = get();
+    if (!forkChoosingState || forkChoosingState.phase !== 'overhead') return;
+
+    set({
+      forkChoosingState: { ...forkChoosingState, phase: 'descending' },
+    });
+  },
+
+  setForkPhase: (phase) => {
+    const { forkChoosingState } = get();
+    if (!forkChoosingState) return;
+    set({
+      forkChoosingState: { ...forkChoosingState, phase },
+    });
   },
 
   // Hologram projector actions

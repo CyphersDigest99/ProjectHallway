@@ -96,6 +96,8 @@ const App: React.FC = () => {
     canvasClipboard,
     // Branching
     createBranch,
+    // Fork choosing
+    forkChoosingState,
   } = useSceneStore(useShallow(s => ({
     objects: s.objects,
     signs: s.signs,
@@ -137,6 +139,7 @@ const App: React.FC = () => {
     pasteSectionDrawings: s.pasteSectionDrawings,
     canvasClipboard: s.canvasClipboard,
     createBranch: s.createBranch,
+    forkChoosingState: s.forkChoosingState,
   })));
 
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -882,6 +885,36 @@ const App: React.FC = () => {
       {/* Decorating Mode UI (3D integrated with drawing tools) */}
       {navigationMode === 'decorating' && decoratingState && (
         <DecoratingMode3D onContextMenu={handleCanvasContextMenu} />
+      )}
+
+      {/* Fork Choosing Overlay */}
+      {navigationMode === 'choosing' && forkChoosingState && (
+        <div className="fork-choosing-overlay">
+          {forkChoosingState.phase === 'ascending' && (
+            <div className="fork-choosing-text">Approaching intersection...</div>
+          )}
+          {forkChoosingState.phase === 'overhead' && (
+            <>
+              <div className="fork-choosing-title">Choose Your Path</div>
+              <div className="fork-choosing-paths">
+                {forkChoosingState.forwardEdges.map((edge, i) => (
+                  <div
+                    key={edge.edgeId}
+                    className={`fork-choosing-path ${i === forkChoosingState.selectedIndex ? 'selected' : ''}`}
+                  >
+                    {edge.label}
+                  </div>
+                ))}
+              </div>
+              <div className="fork-choosing-instructions">
+                Arrow keys to select &middot; Enter to confirm &middot; ESC to cancel
+              </div>
+            </>
+          )}
+          {forkChoosingState.phase === 'descending' && (
+            <div className="fork-choosing-text">Entering tunnel...</div>
+          )}
+        </div>
       )}
 
       {/* Canvas Context Menu */}

@@ -1468,7 +1468,10 @@ const CameraController: React.FC<{
   decoratingState: { wall: WallSide; zPosition: number; cameraOffset: number } | null;
   tunnelPath?: TunnelPath | null;
   currentT?: number;
-}> = ({ scrollZ, lookRotation, fov, navigationMode, decoratingState, tunnelPath, currentT }) => {
+  forkChoosingState?: { nodePosition: { x: number; y: number; z: number }; phase: 'ascending' | 'overhead' | 'descending'; forwardEdges: { direction: { x: number; y: number; z: number } }[]; selectedIndex: number } | null;
+  onForkPhaseChange?: (phase: 'ascending' | 'overhead' | 'descending') => void;
+  onForkDescendComplete?: () => void;
+}> = ({ scrollZ, lookRotation, fov, navigationMode, decoratingState, tunnelPath, currentT, forkChoosingState, onForkPhaseChange, onForkDescendComplete }) => {
   const { camera } = useThree();
   const currentRotation = useRef({ yaw: 0, pitch: 0 });
   const currentPosition = useRef({ x: 0, y: 0, z: 0 });
@@ -1569,6 +1572,93 @@ const CameraController: React.FC<{
       currentLookAt.current.y += (lookAtY - currentLookAt.current.y) * lerpFactor;
       currentLookAt.current.z += (targetZ - currentLookAt.current.z) * lerpFactor;
 
+    } else if (navigationMode === 'choosing' && forkChoosingState) {
+      // Fork choosing mode: bird's-eye Y-fork camera
+      const np = forkChoosingState.nodePosition;
+
+      if (forkChoosingState.phase === 'ascending') {
+        const ascendLerp = 0.04;
+        const targetX = np.x;
+        const targetY = np.y + 35;
+        const targetZ = np.z;
+
+        currentPosition.current.x += (targetX - currentPosition.current.x) * ascendLerp;
+        currentPosition.current.y += (targetY - currentPosition.current.y) * ascendLerp;
+        currentPosition.current.z += (targetZ - currentPosition.current.z) * ascendLerp;
+
+        currentLookAt.current.x += (np.x - currentLookAt.current.x) * ascendLerp;
+        currentLookAt.current.y += (np.y - currentLookAt.current.y) * ascendLerp;
+        currentLookAt.current.z += (np.z - currentLookAt.current.z) * ascendLerp;
+
+        // Widen FOV toward 90
+        const fovTarget = 90;
+        currentFov.current += (fovTarget - currentFov.current) * ascendLerp;
+        (camera as THREE.PerspectiveCamera).fov = currentFov.current;
+        (camera as THREE.PerspectiveCamera).updateProjectionMatrix();
+
+        // Set up vector so "forward" in tunnel = "up" on screen
+        camera.up.set(0, 0, -1);
+
+        // Transition to overhead when close enough
+        if (Math.abs(currentPosition.current.y - targetY) < 0.5) {
+          onForkPhaseChange?.('overhead');
+        }
+      } else if (forkChoosingState.phase === 'overhead') {
+        const overheadLerp = 0.08;
+        const time = performance.now() / 1000;
+        const floatY = np.y + 35 + Math.sin(time * 0.5) * 0.3;
+
+        currentPosition.current.x += (np.x - currentPosition.current.x) * overheadLerp;
+        currentPosition.current.y += (floatY - currentPosition.current.y) * overheadLerp;
+        currentPosition.current.z += (np.z - currentPosition.current.z) * overheadLerp;
+
+        currentLookAt.current.x += (np.x - currentLookAt.current.x) * overheadLerp;
+        currentLookAt.current.y += (np.y - currentLookAt.current.y) * overheadLerp;
+        currentLookAt.current.z += (np.z - currentLookAt.current.z) * overheadLerp;
+
+        camera.up.set(0, 0, -1);
+      } else if (forkChoosingState.phase === 'descending') {
+        const descendLerp = 0.05;
+        const selected = forkChoosingState.forwardEdges[forkChoosingState.selectedIndex];
+        const dir = selected.direction;
+
+        // Target: 5m into the selected tunnel at ground level
+        const targetX = np.x + dir.x * 5;
+        const targetY = np.y;
+        const targetZ = np.z + dir.z * 5;
+
+        // Look 15m ahead along the path
+        const lookX = np.x + dir.x * 15;
+        const lookY = np.y;
+        const lookZ = np.z + dir.z * 15;
+
+        currentPosition.current.x += (targetX - currentPosition.current.x) * descendLerp;
+        currentPosition.current.y += (targetY - currentPosition.current.y) * descendLerp;
+        currentPosition.current.z += (targetZ - currentPosition.current.z) * descendLerp;
+
+        currentLookAt.current.x += (lookX - currentLookAt.current.x) * descendLerp;
+        currentLookAt.current.y += (lookY - currentLookAt.current.y) * descendLerp;
+        currentLookAt.current.z += (lookZ - currentLookAt.current.z) * descendLerp;
+
+        // Restore FOV to 75
+        currentFov.current += (75 - currentFov.current) * descendLerp;
+        (camera as THREE.PerspectiveCamera).fov = currentFov.current;
+        (camera as THREE.PerspectiveCamera).updateProjectionMatrix();
+
+        // Restore up vector
+        const upY = camera.up.y;
+        camera.up.set(0, upY + (1 - upY) * descendLerp, camera.up.z * (1 - descendLerp));
+        camera.up.normalize();
+
+        // Complete when close enough
+        const dx = currentPosition.current.x - targetX;
+        const dy = currentPosition.current.y - targetY;
+        const dz = currentPosition.current.z - targetZ;
+        if (Math.sqrt(dx * dx + dy * dy + dz * dz) < 0.5) {
+          camera.up.set(0, 1, 0);
+          onForkDescendComplete?.();
+        }
+      }
     } else if (navigationMode === 'canvas') {
       // Canvas mode: Camera handled separately or frozen
     }
@@ -1587,6 +1677,166 @@ const CameraController: React.FC<{
   });
 
   return null;
+};
+
+// Detects proximity to intersection nodes and triggers fork choosing mode
+const ForkProximityDetector: React.FC<{
+  scrollZ: number;
+  navigationMode: NavigationMode;
+  tunnelTopology: TunnelTopology;
+  currentEdgeId: string;
+}> = ({ scrollZ, navigationMode, tunnelTopology, currentEdgeId }) => {
+  const enterForkChoosing = useSceneStore(s => s.enterForkChoosing);
+  const forkCooldownNodeId = useSceneStore(s => s.forkCooldownNodeId);
+
+  useFrame(() => {
+    if (navigationMode !== 'normal') return;
+
+    const edge = getEdge(tunnelTopology, currentEdgeId);
+    if (!edge) return;
+
+    // Check both endpoints of the current edge
+    const checkNode = (nodeId: string) => {
+      if (!isIntersection(tunnelTopology, nodeId)) return;
+      if (forkCooldownNodeId === nodeId) return;
+
+      const node = tunnelTopology.nodes.find(n => n.id === nodeId);
+      if (!node) return;
+
+      const distance = Math.abs(scrollZ - Math.abs(node.position.z));
+      if (distance < 15) {
+        enterForkChoosing(nodeId, scrollZ);
+      }
+    };
+
+    checkNode(edge.fromNodeId);
+    checkNode(edge.toNodeId);
+  });
+
+  // Clear cooldown when far enough away
+  useFrame(() => {
+    if (!forkCooldownNodeId) return;
+    const node = tunnelTopology.nodes.find(n => n.id === forkCooldownNodeId);
+    if (!node) return;
+
+    const distance = Math.abs(scrollZ - Math.abs(node.position.z));
+    if (distance > 30) {
+      useSceneStore.setState({ forkCooldownNodeId: null });
+    }
+  });
+
+  return null;
+};
+
+// 3D path indicators visible from overhead during fork choosing
+const ForkPathIndicators: React.FC<{
+  forkChoosingState: {
+    nodePosition: { x: number; y: number; z: number };
+    forwardEdges: { edgeId: string; direction: { x: number; y: number; z: number }; label: string }[];
+    selectedIndex: number;
+    phase: 'ascending' | 'overhead' | 'descending';
+  };
+  accentColor: string;
+}> = ({ forkChoosingState, accentColor }) => {
+  const { nodePosition, forwardEdges, selectedIndex } = forkChoosingState;
+  const meshRef = useRef<THREE.Group>(null);
+  const timeRef = useRef(0);
+
+  useFrame((_, dt) => {
+    timeRef.current += dt;
+  });
+
+  return (
+    <group>
+      {forwardEdges.map((edge, i) => {
+        const isSelected = i === selectedIndex;
+        const dir = edge.direction;
+        const stripLength = 30;
+        const stripWidth = 5;
+
+        // Center of the strip: offset from node along direction
+        const cx = nodePosition.x + dir.x * stripLength * 0.5;
+        const cy = nodePosition.y - (TUNNEL_HEIGHT / 2) + 0.05; // Just above floor
+        const cz = nodePosition.z + dir.z * stripLength * 0.5;
+
+        // Rotation: align strip along the direction vector
+        const angle = Math.atan2(dir.x, dir.z);
+
+        // Arrow position: at end of strip
+        const ax = nodePosition.x + dir.x * stripLength;
+        const ay = cy + 0.5;
+        const az = nodePosition.z + dir.z * stripLength;
+
+        // Label position: above the strip midpoint
+        const lx = nodePosition.x + dir.x * stripLength * 0.35;
+        const ly = nodePosition.y + 3;
+        const lz = nodePosition.z + dir.z * stripLength * 0.35;
+
+        return (
+          <group key={edge.edgeId}>
+            {/* Ground strip */}
+            <mesh
+              position={[cx, cy, cz]}
+              rotation={[-Math.PI / 2, 0, -angle]}
+            >
+              <planeGeometry args={[stripWidth, stripLength]} />
+              <meshStandardMaterial
+                color={isSelected ? accentColor : '#666666'}
+                emissive={isSelected ? accentColor : '#000000'}
+                emissiveIntensity={isSelected ? 0.6 : 0}
+                transparent
+                opacity={isSelected ? 0.6 : 0.15}
+                side={THREE.DoubleSide}
+                depthWrite={false}
+              />
+            </mesh>
+
+            {/* Arrow cone at end of strip */}
+            <mesh position={[ax, ay, az]} rotation={[0, -angle, 0]}>
+              <coneGeometry args={[1.2, 2.5, 8]} />
+              <meshStandardMaterial
+                color={isSelected ? accentColor : '#888888'}
+                emissive={isSelected ? accentColor : '#000000'}
+                emissiveIntensity={isSelected ? 1.5 : 0}
+                transparent
+                opacity={isSelected ? 0.9 : 0.3}
+              />
+            </mesh>
+
+            {/* Label */}
+            <Html
+              position={[lx, ly, lz]}
+              center
+              distanceFactor={20}
+              style={{ pointerEvents: 'none' }}
+            >
+              <div style={{
+                color: isSelected ? '#ffd700' : '#888888',
+                fontSize: '18px',
+                fontWeight: isSelected ? 'bold' : 'normal',
+                fontFamily: 'monospace',
+                textShadow: isSelected ? '0 0 10px rgba(255, 215, 0, 0.8)' : 'none',
+                whiteSpace: 'nowrap',
+                userSelect: 'none',
+              }}>
+                {edge.label}
+              </div>
+            </Html>
+
+            {/* Glow light on selected path */}
+            {isSelected && (
+              <pointLight
+                position={[cx, cy + 2, cz]}
+                color={accentColor}
+                intensity={2}
+                distance={20}
+              />
+            )}
+          </group>
+        );
+      })}
+    </group>
+  );
 };
 
 // Infinite tunnel manager with improved recycling.
@@ -2615,6 +2865,7 @@ const PortalMarker: React.FC<{
 }> = ({ portal, nodeId, accentColor }) => {
   const [hovered, setHovered] = useState(false);
   const navigateToEdge = useSceneStore(s => s.navigateToEdge);
+  const navMode = useSceneStore(s => s.navigationMode);
 
   // Compute rotation to face the portal direction
   const rotation = useMemo(() => {
@@ -2626,8 +2877,9 @@ const PortalMarker: React.FC<{
 
   const handleClick = useCallback((e: ThreeEvent<MouseEvent>) => {
     e.stopPropagation();
+    if (navMode === 'choosing') return;
     navigateToEdge(portal.edgeId, nodeId);
-  }, [navigateToEdge, portal.edgeId, nodeId]);
+  }, [navigateToEdge, portal.edgeId, nodeId, navMode]);
 
   const frameW = portal.width * 0.8;
   const frameH = portal.height * 0.8;
@@ -2805,7 +3057,7 @@ const SceneContent: React.FC<SceneProps & {
   navigationMode: NavigationMode;
   decoratingState: { wall: WallSide; zPosition: number; cameraOffset: number } | null;
 }> = ({ onContextMenu, onSignContextMenu, onLightContextMenu, onDateMarkerContextMenu, onHover, onWallClick, onConfirmWallpaper, onCancelWallpaper, scrollZ, lookRotation, fov, navigationMode, decoratingState }) => {
-  const { objects, signs, lights, wallImages, wallSections, canvasItems, dateMarkers, pendingWallpaper, settings, generateSignsUpToDepth, generateLightsUpToDepth, generateSectionsUpToDepth, decoratingBrushSettings, addStrokeToDrawing, hoveredWallSection, setHoveredWallSection, tunnelTopology, currentEdgeId, currentT, activeHologram, closeHologram, hologramNext, hologramPrev, hologramSetPlaying } = useSceneStore(useShallow(s => ({
+  const { objects, signs, lights, wallImages, wallSections, canvasItems, dateMarkers, pendingWallpaper, settings, generateSignsUpToDepth, generateLightsUpToDepth, generateSectionsUpToDepth, decoratingBrushSettings, addStrokeToDrawing, hoveredWallSection, setHoveredWallSection, tunnelTopology, currentEdgeId, currentT, activeHologram, closeHologram, hologramNext, hologramPrev, hologramSetPlaying, forkChoosingState, setForkPhase, navigateToEdge, exitForkChoosing } = useSceneStore(useShallow(s => ({
     objects: s.objects,
     signs: s.signs,
     lights: s.lights,
@@ -2830,6 +3082,10 @@ const SceneContent: React.FC<SceneProps & {
     hologramNext: s.hologramNext,
     hologramPrev: s.hologramPrev,
     hologramSetPlaying: s.hologramSetPlaying,
+    forkChoosingState: s.forkChoosingState,
+    setForkPhase: s.setForkPhase,
+    navigateToEdge: s.navigateToEdge,
+    exitForkChoosing: s.exitForkChoosing,
   })));
 
   // Get drawings that have strokes
@@ -2844,6 +3100,14 @@ const SceneContent: React.FC<SceneProps & {
   const getSectionForDrawing = useCallback((drawing: CanvasDrawingItem): WallSection | undefined => {
     return wallSections.find((s) => s.id === drawing.sectionId);
   }, [wallSections]);
+
+  // Fork descend complete: navigate to the selected edge and exit choosing mode
+  const handleForkDescendComplete = useCallback(() => {
+    if (!forkChoosingState) return;
+    const selected = forkChoosingState.forwardEdges[forkChoosingState.selectedIndex];
+    navigateToEdge(selected.edgeId, selected.nodeId);
+    exitForkChoosing();
+  }, [forkChoosingState, navigateToEdge, exitForkChoosing]);
 
   // Track scroll velocity for reactive neural pulse
   const prevScrollZRef = useRef(scrollZ);
@@ -2876,8 +3140,10 @@ const SceneContent: React.FC<SceneProps & {
 
   // Calculate fog based on settings
   // Fog starts further away and extends further - roughly 2x previous visibility
-  const fogNear = 20 * (1 - settings.haziness * 0.3);
-  const fogFar = settings.drawDistance * 1.5 * (1 - settings.haziness * 0.2);
+  // Increase fog distance during fork choosing so overhead view isn't obscured
+  const inChoosingMode = navigationMode === 'choosing';
+  const fogNear = inChoosingMode ? 100 : 20 * (1 - settings.haziness * 0.3);
+  const fogFar = inChoosingMode ? 500 : settings.drawDistance * 1.5 * (1 - settings.haziness * 0.2);
 
   return (
     <>
@@ -2899,7 +3165,26 @@ const SceneContent: React.FC<SceneProps & {
         decoratingState={decoratingState}
         tunnelPath={tunnelPath}
         currentT={currentT}
+        forkChoosingState={forkChoosingState}
+        onForkPhaseChange={setForkPhase}
+        onForkDescendComplete={handleForkDescendComplete}
       />
+
+      {/* Fork proximity detection */}
+      <ForkProximityDetector
+        scrollZ={scrollZ}
+        navigationMode={navigationMode}
+        tunnelTopology={tunnelTopology}
+        currentEdgeId={currentEdgeId}
+      />
+
+      {/* Fork path indicators (visible from overhead) */}
+      {forkChoosingState && (
+        <ForkPathIndicators
+          forkChoosingState={forkChoosingState}
+          accentColor={lColors.accentColor}
+        />
+      )}
 
       <InfiniteTunnel
         cameraZ={scrollZ}
@@ -3058,7 +3343,7 @@ export const Scene: React.FC<SceneProps> = (props) => {
   const lastTimeRef = useRef<number>(0);
   const lookResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const { settings, navigationMode, decoratingState, exitDecoratingMode, hoveredWallSection, pendingNavigation, clearPendingNavigation, activeHologram, closeHologram } = useSceneStore(useShallow(s => ({
+  const { settings, navigationMode, decoratingState, exitDecoratingMode, hoveredWallSection, pendingNavigation, clearPendingNavigation, activeHologram, closeHologram, forkChoosingState, cycleForkSelection, confirmForkSelection, exitForkChoosing } = useSceneStore(useShallow(s => ({
     settings: s.settings,
     navigationMode: s.navigationMode,
     decoratingState: s.decoratingState,
@@ -3068,6 +3353,10 @@ export const Scene: React.FC<SceneProps> = (props) => {
     clearPendingNavigation: s.clearPendingNavigation,
     activeHologram: s.activeHologram,
     closeHologram: s.closeHologram,
+    forkChoosingState: s.forkChoosingState,
+    cycleForkSelection: s.cycleForkSelection,
+    confirmForkSelection: s.confirmForkSelection,
+    exitForkChoosing: s.exitForkChoosing,
   })));
 
   // Handle pending edge navigation (teleport to new edge)
@@ -3188,6 +3477,33 @@ export const Scene: React.FC<SceneProps> = (props) => {
         return;
       }
 
+      // Fork choosing mode controls
+      if (navigationMode === 'choosing') {
+        e.preventDefault();
+        if (e.key === 'ArrowLeft' || e.key.toLowerCase() === 'a' || e.key === 'ArrowUp') {
+          cycleForkSelection(-1);
+          return;
+        }
+        if (e.key === 'ArrowRight' || e.key.toLowerCase() === 'd' || e.key === 'ArrowDown') {
+          cycleForkSelection(1);
+          return;
+        }
+        if (e.key === 'Enter' || e.key === ' ') {
+          confirmForkSelection();
+          return;
+        }
+        if (e.key === 'Escape') {
+          // Restore approach position
+          if (forkChoosingState) {
+            setScrollZ(forkChoosingState.approachScrollZ);
+            setLookRotation({ yaw: 0, pitch: 0 });
+          }
+          exitForkChoosing();
+          return;
+        }
+        return;
+      }
+
       // WASD only in normal mode
       if (navigationMode === 'normal') {
         const key = e.key.toLowerCase();
@@ -3220,7 +3536,7 @@ export const Scene: React.FC<SceneProps> = (props) => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };
-  }, [navigationMode, exitDecoratingMode, activeHologram, closeHologram]);
+  }, [navigationMode, exitDecoratingMode, activeHologram, closeHologram, cycleForkSelection, confirmForkSelection, exitForkChoosing, forkChoosingState]);
 
   // WASD animation loop
   useEffect(() => {
@@ -3301,6 +3617,8 @@ export const Scene: React.FC<SceneProps> = (props) => {
         return 'Canvas mode active';
       case 'decorating':
         return 'Decorating mode \u00b7 Space or ESC to exit';
+      case 'choosing':
+        return 'Arrow keys to select path \u00b7 Enter to confirm \u00b7 ESC to cancel';
       default:
         return 'WASD to move \u00b7 Right-drag to look \u00b7 Ctrl+scroll to zoom \u00b7 Click wall to interact';
     }

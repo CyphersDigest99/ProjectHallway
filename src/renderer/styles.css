@@ -1250,3 +1250,67 @@ html, body, #root {
   font-size: 11px;
   font-weight: 700;
 }
+
+/* Fork Choosing Overlay */
+.fork-choosing-overlay {
+  position: absolute;
+  bottom: 60px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(10, 6, 4, 0.85);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(212, 160, 68, 0.4);
+  border-radius: 12px;
+  padding: 16px 28px;
+  z-index: 200;
+  text-align: center;
+  min-width: 280px;
+  pointer-events: none;
+}
+
+.fork-choosing-text {
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 14px;
+  font-style: italic;
+  letter-spacing: 0.5px;
+}
+
+.fork-choosing-title {
+  color: #ffd700;
+  font-size: 20px;
+  font-weight: 600;
+  margin-bottom: 12px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.fork-choosing-paths {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  margin-bottom: 12px;
+}
+
+.fork-choosing-path {
+  padding: 8px 18px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 14px;
+  font-family: monospace;
+  transition: all 0.2s ease;
+}
+
+.fork-choosing-path.selected {
+  background: rgba(212, 160, 68, 0.2);
+  border-color: rgba(212, 160, 68, 0.7);
+  color: #ffd700;
+  box-shadow: 0 0 12px rgba(212, 160, 68, 0.3);
+}
+
+.fork-choosing-instructions {
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 11px;
+  letter-spacing: 0.5px;
+}
