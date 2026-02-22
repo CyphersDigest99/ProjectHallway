@@ -20,7 +20,8 @@ const LoadedModel: React.FC<ModelObjectProps & { modelUrl: string }> = ({
   const groupRef = useRef<THREE.Group>(null);
   const [hovered, setHovered] = useState(false);
 
-  const { selectedObjectId, selectObject } = useSceneStore();
+  const selectedObjectId = useSceneStore(s => s.selectedObjectId);
+  const selectObject = useSceneStore(s => s.selectObject);
   const isSelected = selectedObjectId === object.id;
 
   const { scene } = useGLTF(modelUrl);

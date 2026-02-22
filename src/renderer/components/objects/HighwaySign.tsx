@@ -89,7 +89,7 @@ const getSnappedPosition = (
 
 export const HighwaySign: React.FC<HighwaySignProps> = ({ sign, onContextMenu }) => {
   const groupRef = useRef<THREE.Group>(null);
-  const { updateSign } = useSceneStore();
+  const updateSign = useSceneStore(s => s.updateSign);
   const { camera, gl, raycaster } = useThree();
 
   const [isDragging, setIsDragging] = useState(false);

@@ -318,7 +318,7 @@ const IndustrialFixture: React.FC<{
 
 export const CeilingLight: React.FC<CeilingLightProps> = ({ light, globalBrightness = 1.0, onContextMenu }) => {
   const groupRef = useRef<THREE.Group>(null);
-  const { updateLight } = useSceneStore();
+  const updateLight = useSceneStore(s => s.updateLight);
   const { camera, gl, raycaster } = useThree();
 
   const [isDragging, setIsDragging] = useState(false);

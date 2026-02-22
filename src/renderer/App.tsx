@@ -11,6 +11,7 @@ import { CanvasMode } from './components/canvas';
 import { DecoratingMode3D } from './components/canvas/DecoratingMode3D';
 import { CanvasContextMenu } from './components/ui/CanvasContextMenu';
 import { useSceneStore } from './store/sceneStore';
+import { useShallow } from 'zustand/react/shallow';
 import { SceneObject, ObjectType, HighwaySign, CeilingLight, WallSide, AnyCanvasItem, CanvasTextItem, CanvasImageItem, CanvasDirectoryItem, CanvasHyperlinkItem, CanvasAppShortcutItem, CanvasFileShortcutItem, DateMarker, LightFixtureStyle } from '../shared/types';
 import { DateMarkerModal } from './components/ui/DateMarkerModal';
 import { LightFixtureModal } from './components/ui/LightFixtureModal';
@@ -80,7 +81,7 @@ const App: React.FC = () => {
     updateWallSettings, setPendingWallpaper, clearPendingWallpaper, confirmWallImage,
     loadState,
     // Navigation mode
-    navigationMode, canvasModeState, decoratingState, enterSightseeingMode, enterCanvasMode, enterDecoratingMode,
+    navigationMode, canvasModeState, decoratingState, enterCanvasMode, enterDecoratingMode,
     // Canvas items
     addCanvasItem, selectedCanvasItemId,
     // Date markers
@@ -89,7 +90,57 @@ const App: React.FC = () => {
     pendingLight, startPlacingLight, confirmLightPlacement, cancelLightPlacement, removeLight,
     // Wall sections
     updateWallSection, wallSections,
-  } = useSceneStore();
+    // Wall section interaction
+    getWallSectionAt, clearSectionDrawings, copySectionDrawings, pasteSectionDrawings,
+    // Clipboard
+    canvasClipboard,
+    // Branching
+    createBranch,
+    // Fork choosing
+    forkChoosingState,
+  } = useSceneStore(useShallow(s => ({
+    objects: s.objects,
+    signs: s.signs,
+    lights: s.lights,
+    addObject: s.addObject,
+    updateObject: s.updateObject,
+    removeObject: s.removeObject,
+    updateSign: s.updateSign,
+    removeSign: s.removeSign,
+    updateWallSettings: s.updateWallSettings,
+    setPendingWallpaper: s.setPendingWallpaper,
+    clearPendingWallpaper: s.clearPendingWallpaper,
+    confirmWallImage: s.confirmWallImage,
+    loadState: s.loadState,
+    navigationMode: s.navigationMode,
+    canvasModeState: s.canvasModeState,
+    decoratingState: s.decoratingState,
+    enterCanvasMode: s.enterCanvasMode,
+    enterDecoratingMode: s.enterDecoratingMode,
+    addCanvasItem: s.addCanvasItem,
+    selectedCanvasItemId: s.selectedCanvasItemId,
+    dateMarkers: s.dateMarkers,
+    pendingDateMarker: s.pendingDateMarker,
+    startPlacingDateMarker: s.startPlacingDateMarker,
+    confirmDateMarkerPlacement: s.confirmDateMarkerPlacement,
+    cancelDateMarkerPlacement: s.cancelDateMarkerPlacement,
+    removeDateMarker: s.removeDateMarker,
+    updateDateMarker: s.updateDateMarker,
+    pendingLight: s.pendingLight,
+    startPlacingLight: s.startPlacingLight,
+    confirmLightPlacement: s.confirmLightPlacement,
+    cancelLightPlacement: s.cancelLightPlacement,
+    removeLight: s.removeLight,
+    updateWallSection: s.updateWallSection,
+    wallSections: s.wallSections,
+    getWallSectionAt: s.getWallSectionAt,
+    clearSectionDrawings: s.clearSectionDrawings,
+    copySectionDrawings: s.copySectionDrawings,
+    pasteSectionDrawings: s.pasteSectionDrawings,
+    canvasClipboard: s.canvasClipboard,
+    createBranch: s.createBranch,
+    forkChoosingState: s.forkChoosingState,
+  })));
 
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [wallContextMenu, setWallContextMenu] = useState<WallContextMenuState | null>(null);
@@ -107,6 +158,9 @@ const App: React.FC = () => {
   const [showLightFixtureModal, setShowLightFixtureModal] = useState(false);
   const [lastWallClickTime, setLastWallClickTime] = useState(0);
   const [lastWallClickWall, setLastWallClickWall] = useState<WallSide | null>(null);
+  const [wallSectionPopup, setWallSectionPopup] = useState<{
+    x: number; y: number; wall: WallSide; sectionId: string;
+  } | null>(null);
 
   // Load saved state on mount
   useEffect(() => {
@@ -135,6 +189,7 @@ const App: React.FC = () => {
     setWallContextMenu(null);
     setSignContextMenu(null);
     setTooltip(null);
+    setWallSectionPopup(null);
   }, []);
 
   // Handle context menu on highway sign
@@ -149,6 +204,7 @@ const App: React.FC = () => {
     setWallContextMenu(null);
     setLightContextMenu(null);
     setTooltip(null);
+    setWallSectionPopup(null);
   }, []);
 
   // Handle context menu on ceiling light
@@ -163,6 +219,7 @@ const App: React.FC = () => {
     setWallContextMenu(null);
     setSignContextMenu(null);
     setTooltip(null);
+    setWallSectionPopup(null);
   }, []);
 
   // Handle click/right-click on tunnel wall
@@ -173,15 +230,32 @@ const App: React.FC = () => {
     if (event.nativeEvent.button === 0 && navigationMode === 'normal') {
       const now = Date.now();
       const isDoubleClick = now - lastWallClickTime < 400 && lastWallClickWall === wall;
+      const isLeftOrRight = wall === 'left' || wall === 'right';
 
-      if (isDoubleClick) {
-        // Double-click enters decorating mode
+      if (isDoubleClick && isLeftOrRight) {
+        // Double-click on left/right wall enters decorating mode
         enterDecoratingMode(wall, Math.abs(position.z));
         setLastWallClickTime(0);
         setLastWallClickWall(null);
-      } else {
-        // Single-click enters sightseeing mode
-        enterSightseeingMode(position, wall);
+        setWallSectionPopup(null);
+      } else if (isLeftOrRight) {
+        // Single-click on left/right wall shows section popup
+        const section = getWallSectionAt(wall, position.z);
+        if (section) {
+          setWallSectionPopup({
+            x: event.nativeEvent.clientX,
+            y: event.nativeEvent.clientY,
+            wall,
+            sectionId: section.id,
+          });
+          // Close other menus
+          setContextMenu(null);
+          setWallContextMenu(null);
+          setSignContextMenu(null);
+          setLightContextMenu(null);
+          setCanvasContextMenu(null);
+          setDateMarkerContextMenu(null);
+        }
         setLastWallClickTime(now);
         setLastWallClickWall(wall);
       }
@@ -197,8 +271,9 @@ const App: React.FC = () => {
         wall,
       });
       setContextMenu(null);
+      setWallSectionPopup(null);
     }
-  }, [navigationMode, enterSightseeingMode, enterDecoratingMode, lastWallClickTime, lastWallClickWall]);
+  }, [navigationMode, enterDecoratingMode, lastWallClickTime, lastWallClickWall, getWallSectionAt]);
 
   const closeContextMenu = useCallback(() => {
     setContextMenu(null);
@@ -218,6 +293,10 @@ const App: React.FC = () => {
 
   const closeCanvasContextMenu = useCallback(() => {
     setCanvasContextMenu(null);
+  }, []);
+
+  const closeWallSectionPopup = useCallback(() => {
+    setWallSectionPopup(null);
   }, []);
 
   // Canvas context menu handler
@@ -697,6 +776,27 @@ const App: React.FC = () => {
         />
       )}
 
+      {/* Wall section popup (single-click on left/right wall) */}
+      {wallSectionPopup && (
+        <WallSectionPopup
+          x={wallSectionPopup.x}
+          y={wallSectionPopup.y}
+          wall={wallSectionPopup.wall}
+          sectionId={wallSectionPopup.sectionId}
+          onClose={closeWallSectionPopup}
+          onClearWall={() => clearSectionDrawings(wallSectionPopup.sectionId)}
+          onCopyWall={() => copySectionDrawings(wallSectionPopup.sectionId)}
+          onPasteWall={() => pasteSectionDrawings(wallSectionPopup.sectionId, wallSectionPopup.wall)}
+          canPaste={canvasClipboard != null && canvasClipboard.length > 0}
+          onCreateBranch={() => {
+            const section = wallSections.find(s => s.id === wallSectionPopup.sectionId);
+            if (section) {
+              createBranch((section.zStart + section.zEnd) / 2);
+            }
+          }}
+        />
+      )}
+
       {/* Context menu for highway signs */}
       {signContextMenu && (
         <SignContextMenu
@@ -785,6 +885,36 @@ const App: React.FC = () => {
       {/* Decorating Mode UI (3D integrated with drawing tools) */}
       {navigationMode === 'decorating' && decoratingState && (
         <DecoratingMode3D onContextMenu={handleCanvasContextMenu} />
+      )}
+
+      {/* Fork Choosing Overlay */}
+      {navigationMode === 'choosing' && forkChoosingState && (
+        <div className="fork-choosing-overlay">
+          {forkChoosingState.phase === 'ascending' && (
+            <div className="fork-choosing-text">Approaching intersection...</div>
+          )}
+          {forkChoosingState.phase === 'overhead' && (
+            <>
+              <div className="fork-choosing-title">Choose Your Path</div>
+              <div className="fork-choosing-paths">
+                {forkChoosingState.forwardEdges.map((edge, i) => (
+                  <div
+                    key={edge.edgeId}
+                    className={`fork-choosing-path ${i === forkChoosingState.selectedIndex ? 'selected' : ''}`}
+                  >
+                    {edge.label}
+                  </div>
+                ))}
+              </div>
+              <div className="fork-choosing-instructions">
+                Arrow keys to select &middot; Enter to confirm &middot; ESC to cancel
+              </div>
+            </>
+          )}
+          {forkChoosingState.phase === 'descending' && (
+            <div className="fork-choosing-text">Entering tunnel...</div>
+          )}
+        </div>
       )}
 
       {/* Canvas Context Menu */}
@@ -885,6 +1015,91 @@ const SignContextMenu: React.FC<{
 };
 
 // Wall context menu for adding new objects or images
+const WallSectionPopup: React.FC<{
+  x: number;
+  y: number;
+  wall: WallSide;
+  sectionId: string;
+  onClose: () => void;
+  onClearWall: () => void;
+  onCopyWall: () => void;
+  onPasteWall: () => void;
+  canPaste: boolean;
+  onCreateBranch?: () => void;
+}> = ({ x, y, onClose, onClearWall, onCopyWall, onPasteWall, canPaste, onCreateBranch }) => {
+  const menuRef = React.useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        onClose();
+      }
+    };
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [onClose]);
+
+  const adjustedX = Math.min(x, window.innerWidth - 180);
+  const adjustedY = Math.min(y, window.innerHeight - 100);
+
+  return (
+    <div
+      ref={menuRef}
+      className="context-menu"
+      style={{ left: adjustedX, top: adjustedY }}
+    >
+      <div
+        className="context-menu-item"
+        onClick={() => {
+          onCopyWall();
+          onClose();
+        }}
+      >
+        Copy Wall
+      </div>
+      {canPaste && (
+        <div
+          className="context-menu-item"
+          onClick={() => {
+            onPasteWall();
+            onClose();
+          }}
+        >
+          Paste Wall
+        </div>
+      )}
+      {onCreateBranch && (
+        <div
+          className="context-menu-item"
+          onClick={() => {
+            onCreateBranch();
+            onClose();
+          }}
+        >
+          Create Branch
+        </div>
+      )}
+      <div
+        className="context-menu-item danger"
+        onClick={() => {
+          onClearWall();
+          onClose();
+        }}
+      >
+        Clear Wall
+      </div>
+    </div>
+  );
+};
+
 const WallContextMenu: React.FC<{
   x: number;
   y: number;

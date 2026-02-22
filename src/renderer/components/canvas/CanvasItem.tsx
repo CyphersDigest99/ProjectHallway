@@ -18,7 +18,7 @@ export const CanvasItem: React.FC<CanvasItemProps> = ({
   onContextMenu,
   wallDimensions,
 }) => {
-  const { updateCanvasItem } = useSceneStore();
+  const updateCanvasItem = useSceneStore(s => s.updateCanvasItem);
   const [isDragging, setIsDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
 
@@ -208,7 +208,7 @@ const ImageContent: React.FC<{ item: CanvasImageItem }> = ({ item }) => {
 
 // Text content component
 const TextContent: React.FC<{ item: CanvasTextItem; isSelected: boolean }> = ({ item, isSelected }) => {
-  const { updateCanvasItem } = useSceneStore();
+  const updateCanvasItem = useSceneStore(s => s.updateCanvasItem);
   const [isEditing, setIsEditing] = useState(false);
   const [text, setText] = useState(item.content);
 

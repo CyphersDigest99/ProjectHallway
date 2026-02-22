@@ -1,19 +1,56 @@
 import { create } from 'zustand';
 import { v4 as uuidv4 } from 'uuid';
-import { SceneObject, ObjectType, Vector3, SceneState, HighwaySign, WallSide, CeilingLight, SceneSettings, WallSettings, WallImage, WallSection, WallTextureType, AnyCanvasItem, NavigationMode, DrawingStroke, DateMarker, LightFixtureStyle, CanvasRichTextItem } from '../../shared/types';
+import { SceneObject, ObjectType, Vector3, SceneState, HighwaySign, WallSide, CeilingLight, SceneSettings, WallSettings, WallImage, WallSection, WallTextureType, AnyCanvasItem, NavigationMode, DrawingStroke, DateMarker, LightFixtureStyle, CanvasRichTextItem, MaterialSettings, NeuralPulseSettings, AtmosphereSettings, LightingColors, TunnelTopology, MediaFileInfo } from '../../shared/types';
+import { createLegacyTopology, computeMaxDepthFromObjects, getPathForEdge, getEdge as getTopologyEdge, getNode as getTopologyNode, getEdgesAtNode, isIntersection, clearPathCache } from '../tunnel/TunnelGraph';
+
+export const DEFAULT_MATERIAL_SETTINGS: MaterialSettings = {
+  wallMetalness: 0.15,
+  wallRoughness: 0.65,
+  floorMetalness: 0.2,
+  floorRoughness: 0.55,
+  ceilingMetalness: 0.2,
+  ceilingRoughness: 0.7,
+  wireframeOpacity: 0.04,
+  trimOpacity: 0.25,
+};
+
+export const DEFAULT_NEURAL_PULSE_SETTINGS: NeuralPulseSettings = {
+  pulseColor: '#ffd700',
+  baseGlow: 0.15,
+  ambientSpeed: 1.2,
+  ambientIntensity: 0.35,
+  reactiveSpeed: 2.0,
+  reactiveIntensity: 1.0,
+  reactiveSensitivity: 3.0,
+};
+
+export const DEFAULT_ATMOSPHERE_SETTINGS: AtmosphereSettings = {
+  backgroundColor: '#0a0604',
+  fogColor: '#0a0604',
+};
+
+export const DEFAULT_LIGHTING_COLORS: LightingColors = {
+  accentColor: '#d4a044',
+  secondaryColor: '#c47030',
+  ambientLightColor: '#2e1a0a',
+};
 
 const DEFAULT_SCENE_SETTINGS: SceneSettings = {
   lightBrightness: 3.0,
-  envBrightness: 0.05,
+  envBrightness: 0.08,
   drawDistance: 120,
   haziness: 0.3,
   navigationSpeed: 0.08,
   walls: {
-    left: { color: '#161b22', brightness: 1.0, opacity: 1.0 },
-    right: { color: '#161b22', brightness: 1.0, opacity: 1.0 },
-    floor: { color: '#0a0d12', brightness: 1.0, opacity: 1.0 },
-    ceiling: { color: '#0a0d12', brightness: 1.0, opacity: 1.0 },
+    left: { color: '#2a1a0a', brightness: 1.0, opacity: 1.0 },
+    right: { color: '#2a1a0a', brightness: 1.0, opacity: 1.0 },
+    floor: { color: '#1a0f05', brightness: 1.0, opacity: 1.0 },
+    ceiling: { color: '#1a0f05', brightness: 1.0, opacity: 1.0 },
   },
+  materials: { ...DEFAULT_MATERIAL_SETTINGS },
+  neuralPulse: { ...DEFAULT_NEURAL_PULSE_SETTINGS },
+  atmosphere: { ...DEFAULT_ATMOSPHERE_SETTINGS },
+  lightingColors: { ...DEFAULT_LIGHTING_COLORS },
 };
 
 // Tunnel dimensions
@@ -41,11 +78,6 @@ interface DecoratingState {
   cameraOffset: number; // Sideways position along wall
 }
 
-interface SightseeingState {
-  focusPoint: Vector3;
-  wall: WallSide;
-}
-
 interface PendingDateMarker {
   wall: WallSide;
   position: Vector3;
@@ -71,6 +103,33 @@ interface StrokeHistory {
   stroke: DrawingStroke;
 }
 
+interface ForkForwardEdge {
+  edgeId: string;
+  nodeId: string;          // intersection node ID (for navigateToEdge)
+  direction: Vector3;      // normalized direction from node toward edge
+  label: string;
+}
+
+export interface ForkChoosingState {
+  nodeId: string;
+  nodePosition: Vector3;
+  approachEdgeId: string;
+  forwardEdges: ForkForwardEdge[];
+  selectedIndex: number;
+  approachScrollZ: number;
+  phase: 'ascending' | 'overhead' | 'descending';
+}
+
+interface ActiveHologram {
+  objectId: string;
+  directoryPath: string;
+  mediaFiles: MediaFileInfo[];
+  currentIndex: number;
+  isPlaying: boolean;
+  screenPosition: Vector3;
+  projectorPosition: Vector3;
+}
+
 interface SceneStore {
   objects: SceneObject[];
   signs: HighwaySign[];
@@ -92,7 +151,6 @@ interface SceneStore {
 
   // Navigation mode
   navigationMode: NavigationMode;
-  sightseeingState: SightseeingState | null;
   canvasModeState: CanvasModeState | null;
   decoratingState: DecoratingState | null;
 
@@ -109,6 +167,22 @@ interface SceneStore {
 
   // Decorating brush settings (shared between DecoratingMode3D and Scene)
   decoratingBrushSettings: DecoratingBrushSettings | null;
+
+  // Hovered wall section (for hover highlight in normal mode)
+  hoveredWallSection: { wall: WallSide; sectionId: string } | null;
+
+  // Tunnel topology
+  tunnelTopology: TunnelTopology;
+  currentEdgeId: string;
+  currentT: number; // 0..1 position along current edge
+  pendingNavigation: { edgeId: string; scrollZ: number } | null;
+
+  // Fork choosing (bird's-eye Y-fork navigation)
+  forkChoosingState: ForkChoosingState | null;
+  forkCooldownNodeId: string | null;
+
+  // Hologram projector (ephemeral, not persisted)
+  activeHologram: ActiveHologram | null;
 
   // Object actions
   addObject: (type: ObjectType, options?: Partial<SceneObject>) => SceneObject;
@@ -165,8 +239,6 @@ interface SceneStore {
   cancelDateMarkerPlacement: () => void;
 
   // Navigation mode actions
-  enterSightseeingMode: (focusPoint: Vector3, wall: WallSide) => void;
-  exitSightseeingMode: () => void;
   enterCanvasMode: (wall: WallSide, zPosition: number) => void;
   exitCanvasMode: () => void;
   updateCanvasZPosition: (delta: number) => void;
@@ -187,6 +259,34 @@ interface SceneStore {
   // Decorating brush settings
   setDecoratingBrushSettings: (settings: DecoratingBrushSettings | null) => void;
 
+  // Wall section interaction
+  setHoveredWallSection: (section: { wall: WallSide; sectionId: string } | null) => void;
+  clearSectionDrawings: (sectionId: string) => void;
+  copySectionDrawings: (sectionId: string) => void;
+  pasteSectionDrawings: (targetSectionId: string, targetWall: WallSide) => void;
+
+  // Tunnel topology actions
+  setTunnelTopology: (topology: TunnelTopology) => void;
+  setCurrentEdge: (edgeId: string, t?: number) => void;
+  setCurrentT: (t: number) => void;
+  createBranch: (atDepth: number, branchAngle?: number) => string | null; // Returns new edge ID
+  navigateToEdge: (edgeId: string, fromNodeId: string) => void;
+  clearPendingNavigation: () => void;
+
+  // Fork choosing actions
+  enterForkChoosing: (nodeId: string, scrollZ: number) => void;
+  exitForkChoosing: () => void;
+  cycleForkSelection: (delta: number) => void;
+  confirmForkSelection: () => void;
+  setForkPhase: (phase: 'ascending' | 'overhead' | 'descending') => void;
+
+  // Hologram actions
+  openHologram: (objectId: string) => Promise<void>;
+  closeHologram: () => void;
+  hologramNext: () => void;
+  hologramPrev: () => void;
+  hologramSetPlaying: (playing: boolean) => void;
+
   // Settings actions
   updateSettings: (updates: Partial<SceneSettings>) => void;
   updateWallSettings: (wall: WallSide, updates: Partial<WallSettings>) => void;
@@ -205,6 +305,9 @@ const DEFAULT_COLORS: Record<ObjectType, string> = {
   model: '#87ceeb',
   image: '#ffffff',
 };
+
+// Default topology: a straight tunnel used before loadState runs
+const DEFAULT_TOPOLOGY = createLegacyTopology();
 
 const getDefaultName = (type: ObjectType): string => {
   const names: Record<ObjectType, string> = {
@@ -236,6 +339,17 @@ const getSignPosition = (depth: number, wall: WallSide): Vector3 => {
   }
 };
 
+// Single debounced save — replaces the 25+ individual setTimeout calls.
+// Each call resets the timer so only one save fires after activity settles.
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+const debouncedSave = (getSaveState: () => { saveState: () => Promise<void> }) => {
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    getSaveState().saveState();
+  }, 300);
+};
+
 export const useSceneStore = create<SceneStore>((set, get) => ({
   objects: [],
   signs: [],
@@ -257,7 +371,6 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
 
   // Navigation mode
   navigationMode: 'normal',
-  sightseeingState: null,
   canvasModeState: null,
   decoratingState: null,
 
@@ -274,6 +387,22 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
 
   // Decorating brush settings
   decoratingBrushSettings: null,
+
+  // Hovered wall section
+  hoveredWallSection: null,
+
+  // Tunnel topology — default straight tunnel (replaced by loadState)
+  tunnelTopology: DEFAULT_TOPOLOGY,
+  currentEdgeId: DEFAULT_TOPOLOGY.rootEdgeId,
+  currentT: 0,
+  pendingNavigation: null,
+
+  // Fork choosing
+  forkChoosingState: null,
+  forkCooldownNodeId: null,
+
+  // Hologram projector
+  activeHologram: null,
 
   addObject: (type, options = {}) => {
     const newObject: SceneObject = {
@@ -293,7 +422,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
       objects: [...state.objects, newObject],
     }));
 
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
     return newObject;
   },
 
@@ -302,7 +431,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
       objects: state.objects.filter((obj) => obj.id !== id),
       selectedObjectId: state.selectedObjectId === id ? null : state.selectedObjectId,
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   updateObject: (id, updates) => {
@@ -311,7 +440,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
         obj.id === id ? { ...obj, ...updates } : obj
       ),
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   selectObject: (id) => {
@@ -337,7 +466,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
       signs: [...state.signs, newSign],
     }));
 
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
     return newSign;
   },
 
@@ -345,7 +474,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
     set((state) => ({
       signs: state.signs.filter((sign) => sign.id !== id),
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   updateSign: (id, updates) => {
@@ -363,7 +492,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
         return updated;
       }),
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   generateSignsUpToDepth: (depth) => {
@@ -434,7 +563,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
       lights: [...state.lights, newLight],
     }));
 
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
     return newLight;
   },
 
@@ -442,7 +571,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
     set((state) => ({
       lights: state.lights.filter((light) => light.id !== id),
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   updateLight: (id, updates) => {
@@ -451,7 +580,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
         light.id === id ? { ...light, ...updates } : light
       ),
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   startPlacingLight: (wall, position, depth) => {
@@ -529,14 +658,14 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
       wallImages: [...state.wallImages, newWallImage],
       pendingWallpaper: null,
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   removeWallImage: (id) => {
     set((state) => ({
       wallImages: state.wallImages.filter((img) => img.id !== id),
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   // Wall section management
@@ -579,7 +708,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
         section.id === id ? { ...section, ...updates } : section
       ),
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   getWallSectionAt: (wall, z) => {
@@ -607,7 +736,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
       canvasItems: [...state.canvasItems, newItem],
     }));
 
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
     return newItem;
   },
 
@@ -617,7 +746,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
         item.id === id ? { ...item, ...updates } as AnyCanvasItem : item
       ),
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   removeCanvasItem: (id) => {
@@ -625,7 +754,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
       canvasItems: state.canvasItems.filter((item) => item.id !== id),
       selectedCanvasItemId: state.selectedCanvasItemId === id ? null : state.selectedCanvasItemId,
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   selectCanvasItem: (id) => {
@@ -640,7 +769,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
         item.id === id ? { ...item, zIndex: maxZIndex + 1 } : item
       ),
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   sendToBack: (id) => {
@@ -651,7 +780,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
         item.id === id ? { ...item, zIndex: minZIndex - 1 } : item
       ),
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   addStrokeToDrawing: (itemId, stroke) => {
@@ -665,7 +794,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
       strokeUndoStack: [...state.strokeUndoStack, { drawingId: itemId, stroke }],
       strokeRedoStack: [],
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   undoStroke: () => {
@@ -685,7 +814,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
       strokeUndoStack: state.strokeUndoStack.slice(0, -1),
       strokeRedoStack: [...state.strokeRedoStack, lastAction],
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   redoStroke: () => {
@@ -703,7 +832,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
       strokeUndoStack: [...state.strokeUndoStack, lastAction],
       strokeRedoStack: state.strokeRedoStack.slice(0, -1),
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   canUndo: () => {
@@ -729,7 +858,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
       dateMarkers: [...state.dateMarkers, newMarker],
     }));
 
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
     return newMarker;
   },
 
@@ -748,14 +877,14 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
         return updated;
       }),
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   removeDateMarker: (id) => {
     set((state) => ({
       dateMarkers: state.dateMarkers.filter((marker) => marker.id !== id),
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   startPlacingDateMarker: (wall, position, depth) => {
@@ -775,20 +904,6 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
   },
 
   // Navigation mode management
-  enterSightseeingMode: (focusPoint, wall) => {
-    set({
-      navigationMode: 'sightseeing',
-      sightseeingState: { focusPoint, wall },
-    });
-  },
-
-  exitSightseeingMode: () => {
-    set({
-      navigationMode: 'normal',
-      sightseeingState: null,
-    });
-  },
-
   enterCanvasMode: (wall, zPosition) => {
     const { getWallSectionAt, generateSectionsUpToDepth } = get();
     generateSectionsUpToDepth(zPosition + 10);
@@ -807,9 +922,8 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
   },
 
   exitCanvasMode: () => {
-    const { sightseeingState } = get();
     set({
-      navigationMode: sightseeingState ? 'sightseeing' : 'normal',
+      navigationMode: 'normal',
       canvasModeState: null,
       selectedCanvasItemId: null,
     });
@@ -851,9 +965,8 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
   },
 
   exitDecoratingMode: () => {
-    const { sightseeingState } = get();
     set({
-      navigationMode: sightseeingState ? 'sightseeing' : 'normal',
+      navigationMode: 'normal',
       decoratingState: null,
       selectedCanvasItemIds: new Set<string>(),
       canvasClipboard: null,
@@ -943,12 +1056,371 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
     set({ decoratingBrushSettings: settings });
   },
 
+  setHoveredWallSection: (section) => {
+    set({ hoveredWallSection: section });
+  },
+
+  clearSectionDrawings: (sectionId) => {
+    set((state) => ({
+      canvasItems: state.canvasItems.filter(
+        (item) => !(item.type === 'drawing' && item.sectionId === sectionId)
+      ),
+    }));
+    debouncedSave(get);
+  },
+
+  copySectionDrawings: (sectionId) => {
+    const { canvasItems } = get();
+    const drawings = canvasItems.filter(
+      (item) => item.type === 'drawing' && item.sectionId === sectionId
+    );
+    if (drawings.length > 0) {
+      set({ canvasClipboard: drawings });
+    }
+  },
+
+  pasteSectionDrawings: (targetSectionId, targetWall) => {
+    const { canvasClipboard, addCanvasItem } = get();
+    if (!canvasClipboard || canvasClipboard.length === 0) return;
+
+    canvasClipboard.forEach((item) => {
+      addCanvasItem({
+        ...item,
+        wall: targetWall,
+        sectionId: targetSectionId,
+      } as Omit<AnyCanvasItem, 'id' | 'zIndex'>);
+    });
+  },
+
+  // Tunnel topology management
+  setTunnelTopology: (topology) => {
+    set({
+      tunnelTopology: topology,
+      currentEdgeId: topology.rootEdgeId,
+      currentT: 0,
+    });
+    debouncedSave(get);
+  },
+
+  setCurrentEdge: (edgeId, t = 0) => {
+    set({ currentEdgeId: edgeId, currentT: t });
+  },
+
+  setCurrentT: (t) => {
+    set({ currentT: Math.max(0, Math.min(1, t)) });
+  },
+
+  createBranch: (atDepth, branchAngle = Math.PI / 6) => {
+    const { tunnelTopology, currentEdgeId } = get();
+    const edge = getTopologyEdge(tunnelTopology, currentEdgeId);
+    if (!edge) return null;
+
+    const path = getPathForEdge(edge);
+    const t = path.tFromDistance(atDepth);
+    const frame = path.getFrame(t);
+
+    // Create intersection node at the split point
+    const splitNodeId = uuidv4();
+    const splitPos = { x: frame.position.x, y: frame.position.y, z: frame.position.z };
+
+    // The branch direction: rotate tangent by branchAngle around the normal (vertical)
+    const tangent = frame.tangent.clone();
+    const branchDir = tangent.clone().applyAxisAngle(frame.normal, branchAngle);
+    const branchLength = 200; // Default branch length: 200m
+
+    const branchEndPos = {
+      x: splitPos.x + branchDir.x * branchLength,
+      y: splitPos.y + branchDir.y * branchLength,
+      z: splitPos.z + branchDir.z * branchLength,
+    };
+
+    const branchEndNodeId = uuidv4();
+    const newBranchEdgeId = uuidv4();
+
+    // Split the current edge at t: original edge (start → split), continuation (split → end)
+    const continuationEdgeId = uuidv4();
+
+    // Get control points for each half
+    const originalCPs = edge.controlPoints;
+    const splitPoint = { x: frame.position.x, y: frame.position.y, z: frame.position.z };
+
+    // First half: start → split (simplified as 2-point straight for now)
+    const firstHalfCPs = [originalCPs[0], splitPoint];
+    const firstHalfLength = atDepth;
+
+    // Second half: split → end
+    const secondHalfCPs = [splitPoint, originalCPs[originalCPs.length - 1]];
+    const secondHalfLength = Math.max(0, edge.length - atDepth);
+
+    // Branch: split → branch end (curved via intermediate control point)
+    const midBranch = {
+      x: splitPos.x + branchDir.x * branchLength * 0.5,
+      y: splitPos.y + branchDir.y * branchLength * 0.5,
+      z: splitPos.z + branchDir.z * branchLength * 0.5,
+    };
+    const branchCPs = [splitPoint, midBranch, branchEndPos];
+
+    // Build new topology
+    const newNodes = [
+      ...tunnelTopology.nodes,
+      { id: splitNodeId, position: splitPos, label: `Branch ${tunnelTopology.nodes.length}` },
+      { id: branchEndNodeId, position: branchEndPos },
+    ];
+
+    // Replace original edge with two halves + branch
+    const newEdges = tunnelTopology.edges
+      .filter(e => e.id !== edge.id)
+      .concat([
+        {
+          id: edge.id, // Keep original ID for the first half (preserves object edgeId refs)
+          fromNodeId: edge.fromNodeId,
+          toNodeId: splitNodeId,
+          controlPoints: firstHalfCPs,
+          length: firstHalfLength,
+          width: edge.width,
+          height: edge.height,
+        },
+        {
+          id: continuationEdgeId,
+          fromNodeId: splitNodeId,
+          toNodeId: edge.toNodeId,
+          controlPoints: secondHalfCPs,
+          length: secondHalfLength,
+          width: edge.width,
+          height: edge.height,
+        },
+        {
+          id: newBranchEdgeId,
+          fromNodeId: splitNodeId,
+          toNodeId: branchEndNodeId,
+          controlPoints: branchCPs,
+          length: branchLength,
+        },
+      ]);
+
+    // Update objects on the second half of the split edge
+    // Objects beyond the split point should move to the continuation edge
+    const { signs, lights, wallSections, wallImages, canvasItems, dateMarkers } = get();
+
+    // Assign objects beyond the split point to the continuation edge
+    // Keep depths world-absolute (no adjustment) for flat rendering compatibility
+    const updatedSigns = signs.map(s => {
+      if (s.edgeId === edge.id && s.depth > atDepth) {
+        return { ...s, edgeId: continuationEdgeId };
+      }
+      return s;
+    });
+
+    const updatedLights = lights.map(l => {
+      if (l.edgeId === edge.id && l.depth > atDepth) {
+        return { ...l, edgeId: continuationEdgeId };
+      }
+      return l;
+    });
+
+    const updatedWallSections = wallSections.map(ws => {
+      if (ws.edgeId === edge.id && ws.zStart >= atDepth) {
+        return { ...ws, edgeId: continuationEdgeId };
+      }
+      return ws;
+    });
+
+    // Clear path cache since topology changed
+    clearPathCache();
+
+    const newTopology = {
+      nodes: newNodes,
+      edges: newEdges,
+      rootEdgeId: tunnelTopology.rootEdgeId,
+    };
+
+    set({
+      tunnelTopology: newTopology,
+      signs: updatedSigns,
+      lights: updatedLights,
+      wallSections: updatedWallSections,
+    });
+
+    debouncedSave(get);
+    return newBranchEdgeId;
+  },
+
+  navigateToEdge: (edgeId, fromNodeId) => {
+    const { tunnelTopology } = get();
+    const edge = getTopologyEdge(tunnelTopology, edgeId);
+    if (!edge) return;
+
+    // Use the entry node's world Z to compute scrollZ (world-absolute depth)
+    const entryNode = getTopologyNode(tunnelTopology, fromNodeId);
+    const scrollZ = entryNode ? Math.abs(entryNode.position.z) : 0;
+
+    const enteringFromStart = edge.fromNodeId === fromNodeId;
+    const t = enteringFromStart ? 0 : 1;
+
+    clearPathCache();
+
+    set({
+      currentEdgeId: edgeId,
+      currentT: t,
+      pendingNavigation: { edgeId, scrollZ },
+    });
+  },
+
+  clearPendingNavigation: () => {
+    set({ pendingNavigation: null });
+  },
+
+  // Fork choosing actions
+  enterForkChoosing: (nodeId, scrollZ) => {
+    const { tunnelTopology, currentEdgeId, forkCooldownNodeId } = get();
+    if (forkCooldownNodeId === nodeId) return;
+    if (!isIntersection(tunnelTopology, nodeId)) return;
+
+    const node = getTopologyNode(tunnelTopology, nodeId);
+    if (!node) return;
+
+    // Get all edges at this node, excluding the approach edge
+    const allEdges = getEdgesAtNode(tunnelTopology, nodeId);
+    const forwardEdges = allEdges
+      .filter(e => e.id !== currentEdgeId)
+      .map((e, i) => {
+        // Direction: from node toward the other endpoint of this edge
+        const otherNodeId = e.fromNodeId === nodeId ? e.toNodeId : e.fromNodeId;
+        const otherNode = getTopologyNode(tunnelTopology, otherNodeId);
+        const dx = (otherNode?.position.x ?? 0) - node.position.x;
+        const dy = (otherNode?.position.y ?? 0) - node.position.y;
+        const dz = (otherNode?.position.z ?? 0) - node.position.z;
+        const len = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+        return {
+          edgeId: e.id,
+          nodeId: nodeId,
+          direction: { x: dx / len, y: dy / len, z: dz / len },
+          label: otherNode?.label || `Path ${String.fromCharCode(65 + i)}`,
+        };
+      });
+
+    if (forwardEdges.length === 0) return;
+
+    set({
+      navigationMode: 'choosing',
+      forkChoosingState: {
+        nodeId,
+        nodePosition: { ...node.position },
+        approachEdgeId: currentEdgeId,
+        forwardEdges,
+        selectedIndex: 0,
+        approachScrollZ: scrollZ,
+        phase: 'ascending',
+      },
+    });
+  },
+
+  exitForkChoosing: () => {
+    const { forkChoosingState } = get();
+    set({
+      navigationMode: 'normal',
+      forkChoosingState: null,
+      forkCooldownNodeId: forkChoosingState?.nodeId ?? null,
+    });
+  },
+
+  cycleForkSelection: (delta) => {
+    const { forkChoosingState } = get();
+    if (!forkChoosingState || forkChoosingState.phase !== 'overhead') return;
+
+    const count = forkChoosingState.forwardEdges.length;
+    const newIndex = ((forkChoosingState.selectedIndex + delta) % count + count) % count;
+    set({
+      forkChoosingState: { ...forkChoosingState, selectedIndex: newIndex },
+    });
+  },
+
+  confirmForkSelection: () => {
+    const { forkChoosingState } = get();
+    if (!forkChoosingState || forkChoosingState.phase !== 'overhead') return;
+
+    set({
+      forkChoosingState: { ...forkChoosingState, phase: 'descending' },
+    });
+  },
+
+  setForkPhase: (phase) => {
+    const { forkChoosingState } = get();
+    if (!forkChoosingState) return;
+    set({
+      forkChoosingState: { ...forkChoosingState, phase },
+    });
+  },
+
+  // Hologram projector actions
+  openHologram: async (objectId) => {
+    const { objects } = get();
+    const object = objects.find(o => o.id === objectId);
+    if (!object || !object.directoryPath) return;
+
+    try {
+      const mediaFiles = await window.electronAPI.listMediaFiles(object.directoryPath);
+      if (mediaFiles.length === 0) return;
+
+      // Screen position: centered in tunnel, 7m toward the camera from the object
+      const screenPosition: Vector3 = {
+        x: 0,
+        y: 0.5,
+        z: object.position.z + 7,
+      };
+
+      set({
+        activeHologram: {
+          objectId,
+          directoryPath: object.directoryPath,
+          mediaFiles,
+          currentIndex: 0,
+          isPlaying: true,
+          screenPosition,
+          projectorPosition: { ...object.position },
+        },
+      });
+    } catch (error) {
+      console.error('Failed to open hologram:', error);
+    }
+  },
+
+  closeHologram: () => {
+    set({ activeHologram: null });
+  },
+
+  hologramNext: () => {
+    const { activeHologram } = get();
+    if (!activeHologram) return;
+    const nextIndex = (activeHologram.currentIndex + 1) % activeHologram.mediaFiles.length;
+    set({
+      activeHologram: { ...activeHologram, currentIndex: nextIndex, isPlaying: true },
+    });
+  },
+
+  hologramPrev: () => {
+    const { activeHologram } = get();
+    if (!activeHologram) return;
+    const prevIndex = (activeHologram.currentIndex - 1 + activeHologram.mediaFiles.length) % activeHologram.mediaFiles.length;
+    set({
+      activeHologram: { ...activeHologram, currentIndex: prevIndex, isPlaying: true },
+    });
+  },
+
+  hologramSetPlaying: (playing) => {
+    const { activeHologram } = get();
+    if (!activeHologram) return;
+    set({
+      activeHologram: { ...activeHologram, isPlaying: playing },
+    });
+  },
+
   // Settings management
   updateSettings: (updates) => {
     set((state) => ({
       settings: { ...state.settings, ...updates },
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   updateWallSettings: (wall, updates) => {
@@ -961,11 +1433,11 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
         },
       },
     }));
-    setTimeout(() => get().saveState(), 100);
+    debouncedSave(get);
   },
 
   saveState: async () => {
-    const { objects, signs, lights, wallImages, wallSections, canvasItems, dateMarkers, settings } = get();
+    const { objects, signs, lights, wallImages, wallSections, canvasItems, dateMarkers, settings, tunnelTopology } = get();
     const state: SceneState = {
       objects,
       signs,
@@ -975,6 +1447,7 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
       canvasItems,
       dateMarkers,
       settings,
+      tunnelTopology,
       cameraPosition: { x: 0, y: 0, z: 0 },
       cameraTarget: { x: 0, y: 0, z: -10 },
     };
@@ -990,18 +1463,51 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
     try {
       const state = await window.electronAPI.loadState();
       if (state) {
+        const signs = state.signs || [];
+        const lights = state.lights || [];
+        const wallSections = state.wallSections || [];
+
+        // Migrate topology: if no saved topology, create a legacy straight tunnel
+        let topology: TunnelTopology;
+        if (state.tunnelTopology && state.tunnelTopology.edges.length > 0) {
+          topology = state.tunnelTopology;
+        } else {
+          const maxDepth = computeMaxDepthFromObjects(signs, lights, wallSections);
+          topology = createLegacyTopology(maxDepth);
+
+          // Assign all existing objects to the root edge
+          const rootEdgeId = topology.rootEdgeId;
+          signs.forEach(s => { if (!s.edgeId) s.edgeId = rootEdgeId; });
+          lights.forEach(l => { if (!l.edgeId) l.edgeId = rootEdgeId; });
+          wallSections.forEach(ws => { if (!ws.edgeId) ws.edgeId = rootEdgeId; });
+          (state.wallImages || []).forEach(wi => { if (!wi.edgeId) wi.edgeId = rootEdgeId; });
+          (state.canvasItems || []).forEach(ci => { if (!ci.edgeId) ci.edgeId = rootEdgeId; });
+          (state.dateMarkers || []).forEach(dm => { if (!dm.edgeId) dm.edgeId = rootEdgeId; });
+        }
+
         set({
           objects: state.objects || [],
-          signs: state.signs || [],
-          lights: state.lights || [],
+          signs,
+          lights,
           wallImages: state.wallImages || [],
-          wallSections: state.wallSections || [],
+          wallSections,
           canvasItems: state.canvasItems || [],
           dateMarkers: state.dateMarkers || [],
-          settings: state.settings ? { ...DEFAULT_SCENE_SETTINGS, ...state.settings } : DEFAULT_SCENE_SETTINGS,
-          maxGeneratedDepth: state.signs?.reduce((max, s) => Math.max(max, s.depth), 0) || 0,
-          maxGeneratedLightDepth: state.lights?.reduce((max, l) => Math.max(max, l.depth), 0) || 0,
-          maxGeneratedSectionDepth: state.wallSections?.reduce((max, s) => Math.max(max, s.zEnd), 0) || 0,
+          settings: state.settings ? {
+            ...DEFAULT_SCENE_SETTINGS,
+            ...state.settings,
+            walls: { ...DEFAULT_SCENE_SETTINGS.walls, ...state.settings.walls },
+            materials: { ...DEFAULT_MATERIAL_SETTINGS, ...state.settings.materials },
+            neuralPulse: { ...DEFAULT_NEURAL_PULSE_SETTINGS, ...state.settings.neuralPulse },
+            atmosphere: { ...DEFAULT_ATMOSPHERE_SETTINGS, ...state.settings.atmosphere },
+            lightingColors: { ...DEFAULT_LIGHTING_COLORS, ...state.settings.lightingColors },
+          } : DEFAULT_SCENE_SETTINGS,
+          maxGeneratedDepth: signs.reduce((max, s) => Math.max(max, s.depth), 0) || 0,
+          maxGeneratedLightDepth: lights.reduce((max, l) => Math.max(max, l.depth), 0) || 0,
+          maxGeneratedSectionDepth: wallSections.reduce((max, s) => Math.max(max, s.zEnd), 0) || 0,
+          tunnelTopology: topology,
+          currentEdgeId: topology.rootEdgeId,
+          currentT: 0,
         });
       }
     } catch (error) {

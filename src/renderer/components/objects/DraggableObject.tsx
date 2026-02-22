@@ -18,7 +18,7 @@ export const DraggableObject: React.FC<DraggableObjectProps> = ({
   onContextMenu,
   onHover,
 }) => {
-  const { updateObject } = useSceneStore();
+  const updateObject = useSceneStore(s => s.updateObject);
   const { camera, gl, raycaster } = useThree();
   const [isDragging, setIsDragging] = useState(false);
   const dragStartPos = useRef<THREE.Vector3 | null>(null);

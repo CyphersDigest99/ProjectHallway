@@ -77,6 +77,18 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
         </div>
       )}
 
+      {object.directoryPath && (
+        <div
+          className="context-menu-item"
+          onClick={() => {
+            window.electronAPI.openDirectory(object.directoryPath!);
+            onClose();
+          }}
+        >
+          {'📂 Open in Explorer'}
+        </div>
+      )}
+
       <div className="context-menu-divider" />
 
       <div

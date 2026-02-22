@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { useSceneStore } from '../../store/sceneStore';
+import { useShallow } from 'zustand/react/shallow';
 import { DecoratingInfo } from './DecoratingToolbar';
 import { CanvasToolbar, CanvasTool } from './CanvasToolbar';
 import { DrawingStyle, CanvasDrawingItem, AnyCanvasItem } from '../../../shared/types';
@@ -31,7 +32,23 @@ export const DecoratingMode3D: React.FC<DecoratingMode3DProps> = ({ onContextMen
     copySelectedItems,
     pasteItems,
     setDecoratingBrushSettings,
-  } = useSceneStore();
+  } = useSceneStore(useShallow(s => ({
+    decoratingState: s.decoratingState,
+    canvasItems: s.canvasItems,
+    wallSections: s.wallSections,
+    addCanvasItem: s.addCanvasItem,
+    exitDecoratingMode: s.exitDecoratingMode,
+    moveDecoratingCamera: s.moveDecoratingCamera,
+    undoStroke: s.undoStroke,
+    redoStroke: s.redoStroke,
+    canUndo: s.canUndo,
+    canRedo: s.canRedo,
+    generateSectionsUpToDepth: s.generateSectionsUpToDepth,
+    maxGeneratedSectionDepth: s.maxGeneratedSectionDepth,
+    copySelectedItems: s.copySelectedItems,
+    pasteItems: s.pasteItems,
+    setDecoratingBrushSettings: s.setDecoratingBrushSettings,
+  })));
 
   const [currentTool, setCurrentTool] = useState<CanvasTool>('draw');
   const [brushColor, setBrushColor] = useState('#ff0000');
@@ -70,25 +87,35 @@ export const DecoratingMode3D: React.FC<DecoratingMode3DProps> = ({ onContextMen
     return visibleSections.find(s => centerZ >= s.zStart && centerZ < s.zEnd);
   }, [visibleSections, zPosition]);
 
-  // Ensure a drawing exists for the active section
+  // Ensure a drawing exists for the active section and its neighbors
+  // (needed so strokes that cross section boundaries can be saved)
   useEffect(() => {
     if (currentTool === 'draw' && activeSection && wall) {
-      const existingDrawing = canvasItems.find(
-        item => item.type === 'drawing' && item.sectionId === activeSection.id && item.wall === wall
-      ) as CanvasDrawingItem | undefined;
+      // Find active + adjacent sections
+      const sectionsToCheck = [activeSection];
+      const prev = wallSections.find(s => s.wall === wall && s.zEnd === activeSection.zStart);
+      const next = wallSections.find(s => s.wall === wall && s.zStart === activeSection.zEnd);
+      if (prev) sectionsToCheck.push(prev);
+      if (next) sectionsToCheck.push(next);
 
-      if (!existingDrawing) {
-        addCanvasItem({
-          type: 'drawing',
-          wall,
-          sectionId: activeSection.id,
-          position: { x: 0, y: 0 },
-          size: { width: CANVAS_WIDTH, height: CANVAS_HEIGHT },
-          strokes: [],
-        } as Omit<CanvasDrawingItem, 'id' | 'zIndex'>);
+      for (const section of sectionsToCheck) {
+        const existingDrawing = canvasItems.find(
+          item => item.type === 'drawing' && item.sectionId === section.id && item.wall === wall
+        ) as CanvasDrawingItem | undefined;
+
+        if (!existingDrawing) {
+          addCanvasItem({
+            type: 'drawing',
+            wall,
+            sectionId: section.id,
+            position: { x: 0, y: 0 },
+            size: { width: CANVAS_WIDTH, height: CANVAS_HEIGHT },
+            strokes: [],
+          } as Omit<CanvasDrawingItem, 'id' | 'zIndex'>);
+        }
       }
     }
-  }, [currentTool, activeSection, wall, canvasItems, addCanvasItem]);
+  }, [currentTool, activeSection, wall, canvasItems, addCanvasItem, wallSections]);
 
   const handleNavigate = useCallback((delta: number) => {
     moveDecoratingCamera(delta);
